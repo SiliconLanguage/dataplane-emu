@@ -63,12 +63,11 @@ To build `dataplane-emu`, you will need the following installed on your system:
 git clone [https://github.com/SiliconLanguage/dataplane-emu.git](https://github.com/SiliconLanguage/dataplane-emu.git)
 cd dataplane-emu
 
-# 2. Create a build directory
-mkdir build && cd build
+# 2. Configure the project and put build files in a /build folder
+cmake -S . -B build
 
 # 3. Configure and compile
-cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
+cmake --build build --clean-first
 
 # 4. Run the simulator
 Once you've made one of those changes and ran make one last time to get a "Clean" output, you can finally execute your creation:
@@ -77,3 +76,6 @@ Once you've made one of those changes and ran make one last time to get a "Clean
 
 # 5. To see how fast it actually is, try timing it:
 time ./SpdkSimulator
+
+# 6. Pin to specific physical cores (e.g., cores 0 and 1): 
+time taskset -c 0,1 ./build/SpdkSimulator
