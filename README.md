@@ -53,7 +53,7 @@ We are building `dataplane-emu` in iterative phases to ensure robust emulation a
 ### Prerequisites
 
 To build `dataplane-emu`, you will need the following installed on your system:
-- A modern C++ compiler supporting **C++20** (GCC 10+, Clang 11+, or MSVC).
+- A modern C++ compiler supporting **C++20** (GCC 11+, Clang 14+, or MSVC).
 - **CMake** (3.15 or higher)
 
 ### Build Instructions
@@ -69,3 +69,11 @@ mkdir build && cd build
 # 3. Configure and compile
 cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)
+
+# 4. Run the simulator
+Once you've made one of those changes and ran make one last time to get a "Clean" output, you can finally execute your creation:
+
+./SpdkSimulator
+
+# 5. To see how fast it actually is, try timing it:
+time ./SpdkSimulator
