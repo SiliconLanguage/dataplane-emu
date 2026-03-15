@@ -77,10 +77,10 @@ dataplane-emu/
 ## 📚 Prior Art & Inspiration
 `dataplane-emu` draws deep architectural inspiration from industrial-strength distributed storage engines, user-space networking frameworks, and virt-to-silicon hardware research:
 
-*   **[deepseek-ai/3FS](https://github.com/deepseek-ai/3FS):** For its application of RDMA and zero-copy user-space APIs (`USRBIO`) to bypass the kernel and FUSE overheads entirely, achieving extreme throughput for AI training and KV caching [7].
-*   **[daos-stack/daos](https://github.com/daos-stack/daos) (Intel):** For its end-to-end user-space I/O routing and its `libpil4dfs` interception library, which allows seamless POSIX application integration [8, 9].
-*   **Alibaba PolarFS:** For its compute-storage decoupling and user-space file system designed to provide ultra-low latency for cloud databases [10, 11].
-*   **[pulp-platform/mempool](https://github.com/pulp-platform/mempool):** For their pioneering research in mapping OS-level synchronization primitives and message queues directly into tightly-coupled RISC-V hardware accelerators and shared L1 memory clusters [6, 12].
+*   **[deepseek-ai/3FS](https://github.com/deepseek-ai/3FS):** For its application of RDMA and zero-copy user-space APIs (`USRBIO`) to bypass the kernel and FUSE overheads entirely, achieving extreme throughput for AI training and KV caching.
+*   **[daos-stack/daos](https://github.com/daos-stack/daos) (Intel):** For its end-to-end user-space I/O routing and its `libpil4dfs` interception library, which allows seamless POSIX application integration.
+*   **Alibaba PolarFS:** For its compute-storage decoupling and user-space file system designed to provide ultra-low latency for cloud databases.
+*   **[pulp-platform/mempool](https://github.com/pulp-platform/mempool):** For their pioneering research in mapping OS-level synchronization primitives and message queues directly into tightly-coupled RISC-V hardware accelerators and shared L1 memory clusters.
 
 ## 🚀 Getting Started
 
