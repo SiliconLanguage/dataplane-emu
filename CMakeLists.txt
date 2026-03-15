@@ -1,35 +1,46 @@
 cmake_minimum_required(VERSION 3.15)
 
-# Name your project and specify C++ as the language
-project(dataplane-emu VERSION 0.1.0 LANGUAGES CXX)
+# 1. Explicitly force GCC toolchain
+set(CMAKE_C_COMPILER "gcc")
+set(CMAKE_CXX_COMPILER "g++")
 
-# Enforce C++20 standard
-set(CMAKE_CXX_STANDARD 20)
+project(dataplane-emu CXX C)
+
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
-set(CMAKE_CXX_EXTENSIONS False) # Disable compiler-specific extensions (e.g., gnu++20) for strict standard compliance
 
-# Set the C and C++ compilers to clang-19
-set(CMAKE_C_COMPILER clang-19)
-set(CMAKE_CXX_COMPILER clang++-19)
+# 2. Platform-Specific Optimization Logic
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+    message(STATUS "Detected ARM64 (Graviton) Platform - Applying Neoverse-V1 optimizations")
+    set(ARCH_FLAGS "-mcpu=neoverse-v1")
+else()
+    message(STATUS "Detected x86_64 (WSL/Dev) Platform - Applying Native optimizations")
+    set(ARCH_FLAGS "-march=native")
+endif()
 
-# # Set compiler flags for ThreadSanitizer
-# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=thread -O2 -g -Wall -Wextra")
-# set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=thread")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 ${ARCH_FLAGS} -D_FILE_OFFSET_BITS=64")
 
-# Find the system threading library (required for std::thread on Linux/WSL)
-find_package(Threads REQUIRED)
+# Find required modules via pkg-config
+find_package(PkgConfig REQUIRED)
 
-# ---------------------------------------------------------
-# Define the main executable
-# ---------------------------------------------------------
-add_executable(SpdkSimulator
+# 3. Find SPDK & FUSE3
+#pkg_check_modules(SPDK REQUIRED spdk_nvme spdk_env_dpdk spdk_log spdk_util)
+pkg_check_modules(FUSE3 REQUIRED fuse3)
+
+include_directories(include)
+include_directories(${SPDK_INCLUDE_DIRS})
+include_directories(${FUSE3_INCLUDE_DIRS})
+
+# 4. Define the executable
+add_executable(dataplane-emu 
     src/main.cpp
     src/sq_cq.cpp
+    src/fuse_bridge/interceptor.cpp
 )
 
-# Tell CMake where to find your public headers
-# This allows you to do: #include <dataplane_emu/sq_cq.hpp>
-target_include_directories(SpdkSimulator PUBLIC include)
-
-# Link the threading library to your executable
-target_link_libraries(SpdkSimulator PRIVATE Threads::Threads)
+# Link all required libraries
+target_link_libraries(dataplane-emu 
+    ${SPDK_LIBRARIES} 
+    ${FUSE3_LIBRARIES}
+    pthread dl uuid numa
+)

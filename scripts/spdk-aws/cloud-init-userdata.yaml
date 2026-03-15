@@ -1,6 +1,6 @@
 #cloud-config
 package_update: true
-packages: [git, clang, make, python3-pip]
+packages: [git, gcc, gcc-c++, make, python3-pip]
 write_files:
   - path: /usr/local/bin/rehydrate-spdk.sh
     permissions: '0755'
