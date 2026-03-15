@@ -1,6 +1,6 @@
 # 🚀 dataplane-emu: Infrastructure Automation
 
-This directory contains the automation suite to provision and manage a high-performance [AWS Graviton3](https://aws.amazon.com/ec2/instance-types/c7g/) development environment. It is optimized for **SPDK (Storage Performance Development Kit)**, **Kernel Bypass**, and high-speed C++ storage development.
+This directory contains the automation suite to provision and manage a high-performance [AWS Graviton3](https://aws.amazon.com/ec2/instance-types/c7g/) development environment. It is optimized for **SPDK (Storage Performance Development Kit)**, **Kernel Bypass**, and high-speed storage development in C++ or Rust.
 
 ## ⚙️ 0. Prerequisites & Tooling
 
@@ -8,7 +8,7 @@ Before running the automation scripts or deploying infrastructure, ensure you ha
 
 ### A. AWS CLI
 The AWS Command Line Interface is required to interact with your AWS account and launch instances.
-1. **Install:** Follow the [official AWS CLI installation guide](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) for your operating system (Windows, macOS, or Linux).
+1. **Install:** Follow the [official AWS CLI installation guide](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) for your operating system.
 2. **Configure:** Open your terminal and run the configuration wizard:
    ```bash
    aws configure
@@ -19,7 +19,17 @@ The AWS Command Line Interface is required to interact with your AWS account and
    * **Default region name** (e.g., `us-east-1` or `us-west-2`)
    * **Default output format** (e.g., `json`)
 
-### B. Terraform
+### B. OpenSSH Client (Windows Users)
+Windows users must ensure the native SSH client is enabled to allow the PowerShell automation to connect to the node.
+
+Open PowerShell as Administrator and run:
+
+```PowerShell
+Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0
+```
+Restart your terminal.
+
+### C. Terraform
 Terraform is used for any infrastructure-as-code (IaC) state management in this project.
 1. **Install:** Follow the [official HashiCorp Terraform installation guide](https://developer.hashicorp.com/terraform/install) for your OS. Here are quick commands for common environments:
    * **macOS (Homebrew):** ```bash
@@ -32,9 +42,9 @@ Terraform is used for any infrastructure-as-code (IaC) state management in this 
      *(Alternatively, download the binary directly from the official guide).*
    * **Linux (Ubuntu/Debian):**
      ```bash
-     wget -O - [https://apt.releases.hashicorp.com/gpg](https://apt.releases.hashicorp.com/gpg) | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
-     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] [https://apt.releases.hashicorp.com](https://apt.releases.hashicorp.com) $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
-     sudo apt update && sudo apt install terraform
+    wget -O - https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+    sudo apt update && sudo apt install terraform
      ```
 2. **Verify:** Run `terraform --version` to ensure it is installed correctly.
 
@@ -54,18 +64,22 @@ Terraform is used for any infrastructure-as-code (IaC) state management in this 
 
 To prevent leaking sensitive info like your GitHub Personal Access Token or Cloudflare API Tokens, we use environment variables.
 
-**Create your local secret file:**
+**Create your local secret file at the ROOT of the repository:**
 ```bash
-cp scripts/spdk-aws/.env.template scripts/spdk-aws/.env
+cp scripts/spdk-aws/.env.template .env
 ```
 
-**Edit `.env`:** Add your actual credentials.
-* `CF_API_TOKEN`: Your Cloudflare DNS Token.
-* `GITHUB_TOKEN`: Your GitHub Classic PAT.
-* `DEV_DOMAIN`: Your target domain (e.g., `graviton.siliconlanguage.com`).
-* `DEV_SSH_KEY`: The local path to your `.pem` key.
+**Edit `.env`:** Add your actual credentials and instance details.
+* **`INSTANCE_ID`**: Your target AWS EC2 Instance ID (e.g., `i-0123456789abcdef0`).
+* **`AWS_REGION`**: The region your instance is hosted in (e.g., `us-west-2`).
+* **`CF_API_TOKEN`**: Your Cloudflare DNS Token.
+* **`CF_ZONE_ID`**: Your Cloudflare Zone ID.
+* **`GITHUB_TOKEN`**: Your GitHub Classic PAT.
+* **`DEV_DOMAIN`**: Your target domain (e.g., `graviton.myOrg.com`).
+* **`DEV_SSH_KEY`**: The absolute local path to your `.pem` key (e.g., `C:\Users\Username\.ssh\spdk-dev-key.pem`).
+* **`DEV_USER`**: The default SSH user (e.g., `ec2-user`).
 
-*Note: Double check that `.env` is added to `.gitignore`. **Never commit this file.***
+*Note: Double-check that `.env` is added to `.gitignore`. **Never commit this file.***
 
 ---
 
@@ -89,17 +103,9 @@ bash provision-graviton.sh
 ## 🛰️ 3. Connecting to the Instance
 
 ### From Windows (PowerShell)
-The `start-graviton.ps1` script automatically updates your Cloudflare DNS to point to your current home/office IP and launches the SSH session.
+The `start-graviton.ps1` script is fully automated. It will dynamically locate your .env file, fetch the live IP of your AWS instance, update Cloudflare DNS in the background, and instantly open an SSH tunnel bypassing local DNS cache.
 
-**Load your environment variables:**
-```powershell
-Get-Content scripts/spdk-aws/.env | Foreach-Object {
-    $name, $value = $_.Split('=', 2)
-    [System.Environment]::SetEnvironmentVariable($name, $value.Trim('"'), "Process")
-}
-```
-
-**Run the gateway script:**
+**Simply run the gateway script from the root of the repository:**
 ```powershell
 .\scripts\spdk-aws\start-graviton.ps1
 ```

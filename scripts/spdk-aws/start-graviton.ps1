@@ -1,21 +1,35 @@
-# --- Infrastructure Automation: Dynamic DNS & SSH Gateway ---
-# Fully parameterized via Environment Variables
+# 0. Automatically load the .env file from the root of the repository
+$repoRoot = (Get-Item $PSScriptRoot).Parent.Parent.FullName
+$envFile = Join-Path $repoRoot ".env"
+
+if (Test-Path $envFile) {
+    Write-Host "Loading environment from: $envFile" -ForegroundColor DarkGray
+    Get-Content $envFile | Where-Object { $_ -match '=' -and $_.Trim() -notmatch '^#' } | ForEach-Object {
+        $name, $value = $_.Split('=', 2)
+        Set-Item -Path "env:\$($name.Trim())" -Value $value.Trim().Trim('"')
+    }
+} else {
+    Write-Error "No .env file found at $envFile!"
+    exit
+}
 
 # 1. Load Secrets and User-Specific Info from Environment
 $Token       = $env:CF_API_TOKEN
 $ZoneID      = $env:CF_ZONE_ID
-$RecordName  = $env:DEV_DOMAIN      # e.g., graviton.siliconlanguage.com
-$SSHKeyPath  = $env:DEV_SSH_KEY     # e.g., ~/.ssh/spdk-dev-key.pem
-$RemoteUser  = $env:DEV_USER        # e.g., ec2-user
+$RecordName  = $env:DEV_DOMAIN      
+$SSHKeyPath  = $env:DEV_SSH_KEY     
+$RemoteUser  = $env:DEV_USER        
 
-# Validation
-if (-not $Token -or -not $ZoneID -or -not $RecordName) {
-    Write-Error "Missing Environment Variables! Please check your .env setup."
+# Let's print the AWS variables so we know they loaded correctly before making the call
+Write-Host "Target Instance: $env:INSTANCE_ID in $env:AWS_REGION" -ForegroundColor Cyan
+
+Write-Host "Fetching AWS Instance IP..." -ForegroundColor Cyan
+$IP = (aws ec2 describe-instances --instance-ids $env:INSTANCE_ID --region $env:AWS_REGION --query "Reservations[0].Instances[0].PublicIpAddress" --output text).Trim()
+
+if ($IP -eq "None" -or [string]::IsNullOrWhiteSpace($IP)) {
+    Write-Error "Could not get an IP from AWS. Is the instance fully running?"
     exit
 }
-
-Write-Host "Checking current Public IP..." -ForegroundColor Cyan
-$IP = (Invoke-RestMethod -Uri "https://checkip.amazonaws.com").Trim()
 
 # 2. Fetch the Record ID from Cloudflare
 $Headers = @{"Authorization" = "Bearer $Token"; "Content-Type" = "application/json"}
@@ -47,4 +61,7 @@ try {
 
 # 4. Launch SSH Session
 Write-Host "Opening SSH Tunnel to $RemoteUser@$RecordName..." -ForegroundColor Yellow
-ssh -i "$SSHKeyPath" "${RemoteUser}@${RecordName}"
+
+#ssh -i "$SSHKeyPath" "${RemoteUser}@${RecordName}"
+# We use the IP instead of the RecordName to avoid any potential DNS propagation issues, even though we just updated it.
+ssh -i "$SSHKeyPath" "${RemoteUser}@${IP}"
