@@ -1,5 +1,5 @@
 # 🚀 dataplane-emu
-*A Hardware-Accurate Data Plane Emulator for High-Performance Storage and Networks.*
+*A Data Plane Emulation And Hardware-Software Co-Design Enabling Platform for AI and High-Performance Storage*
 
 [![C++](https://img.shields.io/badge/Language-C%2B%2B20-blue.svg)](https://isocpp.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-red.svg)](LICENSE)
