@@ -37,6 +37,10 @@
 *.out
 *.app
 
+# Root source files
+*.c
+*.cpp
+
 # debug information files
 *.dwo
 
@@ -44,4 +48,5 @@
 build/
 
 #environment variables
+.env
 scripts/spdk-aws/.env

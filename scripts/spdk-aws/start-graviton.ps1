@@ -23,6 +23,13 @@ $RemoteUser  = $env:DEV_USER
 # Let's print the AWS variables so we know they loaded correctly before making the call
 Write-Host "Target Instance: $env:INSTANCE_ID in $env:AWS_REGION" -ForegroundColor Cyan
 
+Write-Host "Ensuring instance is starting..." -ForegroundColor Cyan
+aws ec2 start-instances --instance-ids $env:INSTANCE_ID --region $env:AWS_REGION | Out-Null
+
+# Optional: Wait for the instance to be running so it has an IP
+Write-Host "Waiting for instance to reach 'running' state..." -ForegroundColor Yellow
+aws ec2 wait instance-running --instance-ids $env:INSTANCE_ID --region $env:AWS_REGION
+
 Write-Host "Fetching AWS Instance IP..." -ForegroundColor Cyan
 $IP = (aws ec2 describe-instances --instance-ids $env:INSTANCE_ID --region $env:AWS_REGION --query "Reservations[0].Instances[0].PublicIpAddress" --output text).Trim()
 
