@@ -116,41 +116,30 @@ The binary now supports dynamic configuration via command-line arguments.
 
 ### Execution Examples:
 
-**1. Standard Backend (FUSE Bridge Enabled):**
-```bash
+### 1. Standard Backend (FUSE Bridge Enabled):**
 sudo mkdir -p /mnt/virtual_nvme
 sudo ./build/dataplane-emu -k
-```
-***In a second terminal, verify the POSIX bridge:
-```bash
+
+### In a second terminal, verify the POSIX bridge:
 ls -l /mnt/virtual_nvme/nvme_raw_0
 head -c 128 /mnt/virtual_nvme/nvme_raw_0 | hexdump -C
 ```
 
 **2. Performance Benchmark Only:**
-    To test the lock-free atomics and SPSC queues without mounting the file system bridge, default OS scheduling:
-    ```bash
-    ./build/dataplane-emu -b
-    ```
-    High-Performance Benchmark (Multi-Core)
-    Use taskset to pin the emulator to two dedicated physical cores. This enables the Zero-Syscall path, utilizing Acquire/Release hardware barriers for sub-microsecond latency.
-    ```bash
-        # smart_yield() stays in User Mode; sys time will be near 0m0.000s
-        time sudo taskset -c 1,2 ./build/dataplane-emu -b
-    ```
-    Development/Single-Core Mode
-    If restricted to a single CPU, the emulator automatically detects the constraint and enables sched_yield to prevent priority inversion.
-    ```bash
-        # Force execution on a single core
-        # sys time will reflect kernel transitions needed to share the CPU
-        time sudo taskset -c 1 ./build/dataplane-emu -b
-    ```
-
-## ⚠️ Active Development: ARM64 Memory Ordering
-**Note on Graviton/ARM64 Execution:** `dataplane-emu` is currently undergoing aggressive optimization for ARM64's weakly-ordered memory model. 
-Because x86 enforces Total Store Ordering (TSO), the lock-free SPSC (Single-Producer Single-Consumer) queues currently exhibit deterministic behavior on x86_64. However, when deployed on AWS Graviton (ARM64), the relaxed memory model can occasionally result in out-of-order store visibility, leading to consumer starvation or deadlocks under high concurrency. 
-
-**Current Mitigation Path:**
-* Upgrading raw atomic increments to strict C++20 `memory_order_acquire` / `memory_order_release` semantics to enforce implicit `DMB ISH` (Inner Shareable) barriers.
-* Re-aligning Submission/Completion Queue (SQ/CQ) atomic indices with `alignas(64)` to eliminate L1 cache false-sharing across Graviton physical cores.
-* Investigating `DSB` (Data Synchronization Barrier) insertion during FUSE bridging to guarantee POSIX payload visibility before ringing the SPDK doorbell.
+### To test the lock-free atomics and SPSC queues without mounting the file system bridge, default OS scheduling:
+```bash
+./build/dataplane-emu -b
+```
+###  High-Performance Benchmark (Multi-Core)
+### Use taskset to pin the emulator to two dedicated physical cores. This enables the Zero-Syscall path, utilizing Acquire/Release hardware barriers for sub-microsecond latency.
+```bash
+    # smart_yield() stays in User Mode; sys time will be near 0m0.000s
+    time sudo taskset -c 1,2 ./build/dataplane-emu -b
+```
+### Development/Single-Core Mode
+### If restricted to a single CPU, the emulator automatically detects the constraint and enables sched_yield to prevent priority inversion.
+```bash
+    # Force execution on a single core
+    # sys time will reflect kernel transitions needed to share the CPU
+    time sudo taskset -c 1 ./build/dataplane-emu -b
+```
