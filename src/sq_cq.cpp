@@ -33,14 +33,30 @@ static bool is_single_cpu_restricted() {
 }
 
 /**
- * Perform a 'friendly' yield only if the process is constrained to 
- * a single core. This prevents priority inversion/livelocks without 
- * adding kernel transition overhead in multi-core environments.
+ * Architecture-aware yield to optimize for ARM64 weak memory consistency.
+ * * On ARM64 (Graviton), single-core execution can lead to consumer starvation 
+ * if the producer is preempted. This function forces a kernel transition 
+ * only when a single-CPU bottleneck is detected.
  */
 inline void yield_single_cpu_restricted() {
+#if defined(__aarch64__)
+    // Scoped specifically for ARM64 to handle relaxed memory ordering hazards.
     if (is_single_cpu_restricted()) {
-        std::this_thread::yield();
+        // Path A: Single-core fallback. Force a context switch (sched_yield) 
+        // to prevent livelocks between the producer and consumer threads.
+        sched_yield();
+    } else {
+        // Path B: Multi-core Zero-Syscall path.
+        // Provide a hardware hint (yield) to the CPU to reduce power/latency 
+        // in spin-loops without exiting User Mode.
+        __asm__ volatile("yield" ::: "memory");
     }
+#else
+    // Non-ARM architectures (e.g., x86_64) typically follow Total Store Ordering.
+    // Use a lightweight hardware pause to mitigate spin-loop overhead without 
+    // the heavy penalty of a kernel syscall.
+    __builtin_ia32_pause(); 
+#endif
 }
 
 void SqCqEmulator::nvme_device_loop() {
