@@ -101,17 +101,50 @@ sudo ./scripts/spdk-aws/provision-graviton.sh
 # 3. Build the project
 make
 
-# 4. Create the mount point
+# Export library path for FUSE and SPDK dependencies
+export LD_LIBRARY_PATH=/usr/lib64:$LD_LIBRARY_PATH
+
+## 🛠️ Usage & Command Line Options
+The binary now supports dynamic configuration via command-line arguments.
+
+### Flags:
+* `-k` : **Kernel-Bypass Mode**. Enables the FUSE bridge and mounts the virtual device.
+* `-b` : **Benchmark Mode**. Runs a stress test of 1,000,000 I/Os before starting.
+* `-m [path]` : **Custom Mount Point**. Specifies the directory for the FUSE mount (Default: `/mnt/virtual_nvme`).
+
+---
+
+### Execution Examples:
+
+**1. Standard Backend (FUSE Bridge Enabled):**
+```bash
 sudo mkdir -p /mnt/virtual_nvme
-
-# 5. Running the Emulator
-
-# Start the backend and mount the FUSE bridge
-sudo ./build/dataplane-emu
-
-# In a second terminal, verify the POSIX bridge:
+sudo ./build/dataplane-emu -k
+```
+***In a second terminal, verify the POSIX bridge:
+```bash
 ls -l /mnt/virtual_nvme/nvme_raw_0
 head -c 128 /mnt/virtual_nvme/nvme_raw_0 | hexdump -C
+```
+
+**2. Performance Benchmark Only:**
+    To test the lock-free atomics and SPSC queues without mounting the file system bridge, default OS scheduling:
+    ```bash
+    ./build/dataplane-emu -b
+    ```
+    High-Performance Benchmark (Multi-Core)
+    Use taskset to pin the emulator to two dedicated physical cores. This enables the Zero-Syscall path, utilizing Acquire/Release hardware barriers for sub-microsecond latency.
+    ```bash
+        # smart_yield() stays in User Mode; sys time will be near 0m0.000s
+        time sudo taskset -c 1,2 ./build/dataplane-emu -b
+    ```
+    Development/Single-Core Mode
+    If restricted to a single CPU, the emulator automatically detects the constraint and enables sched_yield to prevent priority inversion.
+    ```bash
+        # Force execution on a single core
+        # sys time will reflect kernel transitions needed to share the CPU
+        time sudo taskset -c 1 ./build/dataplane-emu -b
+    ```
 
 ## ⚠️ Active Development: ARM64 Memory Ordering
 **Note on Graviton/ARM64 Execution:** `dataplane-emu` is currently undergoing aggressive optimization for ARM64's weakly-ordered memory model. 
