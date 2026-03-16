@@ -126,18 +126,18 @@ head -c 128 /mnt/virtual_nvme/nvme_raw_0 | hexdump -C
 ```
 
 **2. Performance Benchmark Only:**
-### To test the lock-free atomics and SPSC queues without mounting the file system bridge, default OS scheduling:
+* To test the lock-free atomics and SPSC queues without mounting the file system bridge, default OS scheduling:
 ```bash
 ./build/dataplane-emu -b
 ```
-###  High-Performance Benchmark (Multi-Core)
-### Use taskset to pin the emulator to two dedicated physical cores. This enables the Zero-Syscall path, utilizing Acquire/Release hardware barriers for sub-microsecond latency.
+*  High-Performance Benchmark (Multi-Core)
+* Use taskset to pin the emulator to two dedicated physical cores. This enables the Zero-Syscall path, utilizing Acquire/Release hardware barriers for sub-microsecond latency.
 ```bash
     # smart_yield() stays in User Mode; sys time will be near 0m0.000s
     time sudo taskset -c 1,2 ./build/dataplane-emu -b
 ```
-### Development/Single-Core Mode
-### If restricted to a single CPU, the emulator automatically detects the constraint and enables sched_yield to prevent priority inversion.
+* Development/Single-Core Mode
+* If restricted to a single CPU, the emulator automatically detects the constraint and enables sched_yield to prevent priority inversion.
 ```bash
     # Force execution on a single core
     # sys time will reflect kernel transitions needed to share the CPU
