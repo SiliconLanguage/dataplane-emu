@@ -120,8 +120,8 @@ This executes the standalone data plane ring. It proves that the Graviton MMU is
 ```bash
 ./build/dataplane_ring
 ```
-
-```text
+Expected output:
+```console
 allocating Iov memory... ok.
 ring init: head_ptr=0x12345678
 llama.cpp_consumer: fetched tensor_id=2
@@ -144,4 +144,4 @@ In a second terminal, interact with the bridge:
 
 ```bash
 head -c 128 /mnt/virtual_nvme/nvme_raw_0 | hexdump -C
-```bash
+```
