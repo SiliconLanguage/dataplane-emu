@@ -42,7 +42,7 @@ pkg_check_modules(FUSE3 REQUIRED fuse3)
 include_directories(include)
 include_directories(${FUSE3_INCLUDE_DIRS})
 
-# 4. Define the executable
+# 4. Define the executable dataplane-emu
 add_executable(dataplane-emu 
     src/main.cpp
     src/sq_cq.cpp
@@ -53,4 +53,14 @@ add_executable(dataplane-emu
 target_link_libraries(dataplane-emu 
     ${FUSE3_LIBRARIES}
     pthread dl uuid numa
+)
+
+# 5. Define the executable dataplane_ring
+add_executable(dataplane_ring 
+    src/dataplane_ring.cpp
+)
+
+# Link all required libraries
+target_link_libraries(dataplane_ring
+    pthread
 )

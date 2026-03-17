@@ -82,64 +82,66 @@ dataplane-emu/
 *   **Alibaba PolarFS:** For its compute-storage decoupling and user-space file system designed to provide ultra-low latency for cloud databases.
 *   **[pulp-platform/mempool](https://github.com/pulp-platform/mempool):** For their pioneering research in mapping OS-level synchronization primitives and message queues directly into tightly-coupled RISC-V hardware accelerators and shared L1 memory clusters.
 
-## 🚀 Getting Started
+
+## Key Features Implemented
+* **Hardware-Assisted Pointer Tagging:** Utilizes ARM64 Top Byte Ignore (TBI) to achieve lock-free ABA protection. By packing an 8-bit version counter into the upper bits of a virtual address, we can use standard 64-bit Compare-And-Swap (CAS) instructions to safely update pointers, avoiding the heavy register pressure of 128-bit DW-CAS.
+* **Lock-Free Synchronization:** Strict avoidance of `std::mutex`. Relies entirely on C++11 atomic memory orderings (Acquire/Release) to manage Submission/Completion Queues (SQ/CQ).
+* **Dual-Backend Support:** 
+  * *Zero-Syscall Path:* A pure user-space polling engine utilizing `Iov`/`Ior` shared memory splits for microsecond-latency tensor passing.
+  * *Legacy POSIX Bridge:* A FUSE-based mount that allows standard Linux tools to interact with the queues. (Note: This path incurs standard kernel context-switching overhead and is intended for compatibility, not peak latency).
+
+## Getting Started
 
 ### Prerequisites
-- **Compiler:** GCC/G++ 11+ (Optimized for SPDK compatibility)
-- **Linux:** Ubuntu 22.04+ or WSL2
-- **Libraries:** `libfuse3-dev`, `libnuma-dev`, `pkg-config`
+* **Hardware:** ARM64 architecture (AWS Graviton3 `c7g`/`c7gd` recommended)
+* **Linux:** Ubuntu 22.04+ 
+* **Compiler:** GCC/G++ 11+ (C++17 support required)
+* **Dependencies:** `libfuse3-dev`, `libnuma-dev`, `pkg-config`
 
 ### Build Instructions
 ```bash
-# 1. Clone the repository
-git clone [https://github.com/SiliconLanguage/dataplane-emu.git](https://github.com/SiliconLanguage/dataplane-emu.git)
+git clone https://github.com/SiliconLanguage/dataplane-emu.git
 cd dataplane-emu
 
-# 2. Automated Environment Setup (Phase 3)
+# Provision the automated AWS environment (allocates hugepages, unbinds NVMe)
 sudo ./scripts/spdk-aws/provision-graviton.sh
 
-# 3. Build the project
-make
+mkdir -p build
+g++ -O3 -Wall -std=c++17 -pthread src/dataplane_ring.cpp -o build/dataplane_ring
 
-# Export library path for FUSE and SPDK dependencies
-export LD_LIBRARY_PATH=/usr/lib64:$LD_LIBRARY_PATH
+# Export AArch64 library paths for FUSE/SPDK
+export LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu:$LD_LIBRARY_PATH
 
-## 🛠️ Usage & Command Line Options
-The binary now supports dynamic configuration via command-line arguments.
+## Usage & Execution Modes
 
-### Flags:
-* `-k` : **Kernel-Bypass Mode**. Enables the FUSE bridge and mounts the virtual device.
-* `-b` : **Benchmark Mode**. Runs a stress test of 1,000,000 I/Os before starting.
-* `-m [path]` : **Custom Mount Point**. Specifies the directory for the FUSE mount (Default: `/mnt/virtual_nvme`).
+### 1. Zero-Copy Ring (ARM64 TBI Demonstration)
+This executes the standalone data plane ring. It proves that the Graviton MMU is actively ignoring the top 8 bits of our tagged pointers during user-space execution, allowing safe lock-free polling.
 
----
+```bash
+./build/dataplane_ring
+```
 
-### Execution Examples:
+```text
+allocating Iov memory... ok.
+ring init: head_ptr=0x12345678
+llama.cpp_consumer: fetched tensor_id=2
+```
+### 2. High-Performance Benchmark (Pure Polling)
+Test the lock-free SPSC queues without mounting the FUSE bridge. We use taskset to pin the emulator to dedicated physical cores, enabling the Zero-Syscall path.
 
-### 1. Standard Backend (FUSE Bridge Enabled):**
+```bash
+time sudo taskset -c 1,2 ./build/dataplane-emu -b
+```
+
+### 3. Standard Backend (FUSE POSIX Bridge)
+Enables the FUSE bridge and mounts the virtual device for legacy compatibility. Because this routes through the Linux VFS, expect standard context-switch latency overheads here.
+
+```bash
 sudo mkdir -p /mnt/virtual_nvme
-sudo ./build/dataplane-emu -k
+sudo ./build/dataplane-emu -k -m /mnt/virtual_nvme
+```
+In a second terminal, interact with the bridge:
 
-### In a second terminal, verify the POSIX bridge:
-ls -l /mnt/virtual_nvme/nvme_raw_0
+```bash
 head -c 128 /mnt/virtual_nvme/nvme_raw_0 | hexdump -C
-```
-
-**2. Performance Benchmark Only:**
-* To test the lock-free atomics and SPSC queues without mounting the file system bridge, default OS scheduling:
 ```bash
-./build/dataplane-emu -b
-```
-*  High-Performance Benchmark (Multi-Core)
-* Use taskset to pin the emulator to two dedicated physical cores. This enables the Zero-Syscall path, utilizing Acquire/Release hardware barriers for sub-microsecond latency.
-```bash
-    # smart_yield() stays in User Mode; sys time will be near 0m0.000s
-    time sudo taskset -c 1,2 ./build/dataplane-emu -b
-```
-* Development/Single-Core Mode
-* If restricted to a single CPU, the emulator automatically detects the constraint and enables sched_yield to prevent priority inversion.
-```bash
-    # Force execution on a single core
-    # sys time will reflect kernel transitions needed to share the CPU
-    time sudo taskset -c 1 ./build/dataplane-emu -b
-```
