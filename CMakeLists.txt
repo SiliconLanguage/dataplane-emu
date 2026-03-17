@@ -1,66 +1,68 @@
 cmake_minimum_required(VERSION 3.15)
 
-# 1. Explicitly force GCC toolchain
-set(CMAKE_C_COMPILER "gcc")
-set(CMAKE_CXX_COMPILER "g++")
-
 project(dataplane-emu CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
-# --- New: TSAN Option ---
-option(ENABLE_TSAN "Enable ThreadSanitizer for race detection" OFF)
+option(ENABLE_TSAN "Enable ThreadSanitizer" OFF)
 
-# 2. Platform-Specific Optimization Logic
+# ==============================================================================
+# GRAVITON OPTIMIZATION STRATEGY
+# Target: AWS Graviton3 (Neoverse-V1)
+# 
+# -mcpu=neoverse-v1:
+#   Tuning specifically for the Neoverse-V1 microarchitecture. This enables 
+#   optimizations for the V1 pipeline, branch predictor, and cache hierarchy. 
+#   It also implicitly sets the architecture to Armv8.4-A.
+#
+# -moutline-atomics:
+#   Enables runtime detection of Large System Extensions (LSE). If the CPU 
+#   supports LSE (like Graviton3), it uses high-performance atomic instructions 
+#   (CAS, SWP, LDADD). This is critical for reducing contention in the 
+#   dataplane's ring buffers and mutexes.
+#
+# Verified via: 
+#   objdump -d | grep -i 'cas\|swp\|ldadd' (Confirmed LSE generation)
+# 
+#  curent state:
+# [ec2-user@ip-xxx-xx-xx-xxx dataplane-emu]$ objdump -d build/dataplane-emu | grep -i "zmm\|ptrue" | wc -l
+# 0
+# [ec2-user@ip-xxx-xx-xx-xxx  dataplane-emu]$ objdump -d build/dataplane-emu | grep -i 'cas\|swp\|ldadd' | wc -l
+# 5
+# ==============================================================================
+
+# --- Architecture Detection ---
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
-    message(STATUS "Detected ARM64 (Graviton) Platform - Applying Neoverse-V1 optimizations")
-    set(ARCH_FLAGS "-mcpu=neoverse-v1")
+    # Define as a list (no spaces inside the quotes)
+    set(GRAVITON_FLAGS "-mcpu=neoverse-v1" "-moutline-atomics" "-fallow-store-data-races")
+    message(STATUS "Optimization: Target Graviton3 (Neoverse-V1)")
 else()
-    message(STATUS "Detected x86_64 (WSL/Dev) Platform - Applying Native optimizations")
-    set(ARCH_FLAGS "-march=native")
+    set(GRAVITON_FLAGS "-march=native")
 endif()
 
-# Define base flags
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 ${ARCH_FLAGS} -D_FILE_OFFSET_BITS=64")
+# --- Common Build Options ---
+add_library(project_options INTERFACE)
+target_compile_options(project_options INTERFACE -O3 ${GRAVITON_FLAGS})
+target_compile_definitions(project_options INTERFACE _FILE_OFFSET_BITS=64)
 
-# --- New: Apply TSAN Flags if enabled ---
 if(ENABLE_TSAN)
-    message(STATUS "ThreadSanitizer (TSAN) Enabled - Disabling -O3 for better reports")
-    # TSAN works best with -O1 or -O2 and needs -g for stack traces
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=thread -g -fno-omit-frame-pointer")
-    # Linker also needs the sanitize flag
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=thread")
+    target_compile_options(project_options INTERFACE -fsanitize=thread -g -fno-omit-frame-pointer)
+    target_link_options(project_options INTERFACE -fsanitize=thread)
 endif()
 
-# Find required modules via pkg-config
+# --- Dependencies ---
 find_package(PkgConfig REQUIRED)
-
-# 3. Find SPDK & FUSE3
 pkg_check_modules(FUSE3 REQUIRED fuse3)
 
-include_directories(include)
-include_directories(${FUSE3_INCLUDE_DIRS})
-
-# 4. Define the executable dataplane-emu
+# --- Targets ---
 add_executable(dataplane-emu 
     src/main.cpp
     src/sq_cq.cpp
     src/fuse_bridge/interceptor.cpp
 )
+target_link_libraries(dataplane-emu PRIVATE project_options ${FUSE3_LIBRARIES} pthread dl uuid numa)
+target_include_directories(dataplane-emu PRIVATE include ${FUSE3_INCLUDE_DIRS})
 
-# Link all required libraries
-target_link_libraries(dataplane-emu 
-    ${FUSE3_LIBRARIES}
-    pthread dl uuid numa
-)
-
-# 5. Define the executable dataplane_ring
-add_executable(dataplane_ring 
-    src/dataplane_ring.cpp
-)
-
-# Link all required libraries
-target_link_libraries(dataplane_ring
-    pthread
-)
+add_executable(dataplane_ring src/dataplane_ring.cpp)
+target_link_libraries(dataplane_ring PRIVATE project_options pthread)

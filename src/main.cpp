@@ -1,3 +1,18 @@
+/**
+ * @file hardware_optimization.h
+ * @brief Graviton3 Architectural Notes
+ * * This project is compiled with hardware-specific flags for AWS Graviton3:
+ * * 1. Architecture: Armv8.4-A (via -mcpu=neoverse-v1)
+ * 2. Atomics: Large System Extensions (LSE) enabled.
+ * - Replaces traditional Load/Store-Exclusive loops (LDXR/STXR) with 
+ * single-instruction atomics.
+ * - Provides significant throughput gains for the dataplane-emu ring 
+ * structures under high thread concurrency.
+ * 3. SIMD: SVE (Scalable Vector Extension) support is available in hardware, 
+ * though current logic primarily utilizes NEON/ASIMD for data movement.
+ * * @note Requires GCC 11+ or Clang 14+ for full Neoverse-V1 support.
+ */
+
 #ifndef FUSE_USE_VERSION
 #define FUSE_USE_VERSION 31
 #endif
