@@ -2,6 +2,9 @@
 
 ### A Survey of Architectural Paradigms for User-Space Storage Engines and Implementation Strategy for Dataplane-Emu
 
+**Author:** Ping Long, Principal Systems Architect @ SiliconLanguage Foundry  
+*Contact: [LinkedIn](https://www.linkedin.com/in/pinglong) | [GitHub](https://github.com/ping-long-github) | plongpingl@gmail.com*
+
 ## Abstract
 
 Modern cloud-native storage demands have hit a performance wall imposed by the legacy POSIX system call interface and the "20-microsecond tax" of the Linux kernel's interrupt-driven data path. This paper explores the architectural transition from kernel-space to fully user-space data planes, specifically focusing on the hardware-software co-design required for **ARM64 Neoverse** architectures such as [Azure Cobalt 100](https://azure.microsoft.com/en-us/blog/azure-cobalt-100-based-virtual-machines-are-now-generally-available/) and [AWS Graviton4](https://aws.amazon.com/blogs/aws/join-the-preview-for-new-memory-optimized-aws-graviton4-powered-amazon-ec2-instances-r8g/). We present **dataplane-emu**, an implementation strategy that leverages trampoline-based system call interception and lock-free polling via [SPDK](https://github.com/spdk/spdk) to achieve near-hardware performance limits. By integrating advanced features such as [Large System Extensions (LSE)](https://developer.arm.com/documentation/ddi0487/latest/) and [eXpress Resubmission Path (XRP)](https://www.usenix.org/conference/osdi22/presentation/zhong), our approach demonstrates how legacy database applications can achieve true zero-copy I/O and massive parallelism on 96-core ARM64 cloud instances without requiring a complete codebase rewrite.
@@ -396,5 +399,6 @@ The integration of trampoline-based system call interception and zIO-style trans
 90. AWS, "[AWS Graviton Technical Guide](https://github.com/aws/aws-graviton-getting-started)," Amazon Web Services GitHub Repository, 2024.
 91. Microsoft Learn, "[Use Arm64 Virtual Machines in Azure Kubernetes Service (AKS) for cost effectiveness](https://learn.microsoft.com/en-us/azure/aks/use-arm64-vms)," Azure Kubernetes Service Documentation.
 92. Arm Newsroom, "[Arm Expands its Partnership with GitHub to Accelerate AI-Driven Cloud Development with its Cloud Migration Assistant Custom Agent](https://newsroom.arm.com/blog/arm-cloud-migration-assistant-custom-agent-for-github-copilot)," Arm Blog, Oct. 2025.
-***
-*Copyright © 2026 SiliconLanguage Foundry. All rights reserved.*
+
+---
+*Copyright (c) 2026 SiliconLanguage Foundry. All rights reserved.*
