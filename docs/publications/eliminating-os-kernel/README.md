@@ -396,3 +396,5 @@ The integration of trampoline-based system call interception and zIO-style trans
 90. AWS, "[AWS Graviton Technical Guide](https://github.com/aws/aws-graviton-getting-started)," Amazon Web Services GitHub Repository, 2024.
 91. Microsoft Learn, "[Use Arm64 Virtual Machines in Azure Kubernetes Service (AKS) for cost effectiveness](https://learn.microsoft.com/en-us/azure/aks/use-arm64-vms)," Azure Kubernetes Service Documentation.
 92. Arm Newsroom, "[Arm Expands its Partnership with GitHub to Accelerate AI-Driven Cloud Development with its Cloud Migration Assistant Custom Agent](https://newsroom.arm.com/blog/arm-cloud-migration-assistant-custom-agent-for-github-copilot)," Arm Blog, Oct. 2025.
+***
+*Copyright © 2026 SiliconLanguage Foundry. All rights reserved.*
