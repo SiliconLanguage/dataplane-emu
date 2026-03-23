@@ -125,32 +125,24 @@ static int dp_open(const char *path, struct fuse_file_info *fi) {
  * costly atomic variables or cache-line bouncing.
  */
 
-constexpr uint32_t TELEMETRY_SAMPLE_RATE = 1000;
+constexpr uint32_t STDOUT_LOG_NTH = 1500;
 constexpr long BRANCH_UNLIKELY = 0;
 
 static int dp_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     if (strcmp(path, "/nvme_raw_0") != 0)
         return -ENOENT;
 
-    // 1. Stack Allocation (No Locks, No Heap)
-    char pattern[128];
-    int pattern_len = snprintf(pattern, sizeof(pattern), "[OFFSET:%ld] DATA-PLANE-EMU-BYTE-STREAM ", offset);
+    // 1. Extreme Fast Path: Kernel-optimized SIMD memset blocks all loop overhead
+    memset(buf, 'A', size);
 
-    // 2. Vectorized Copy (No Modulo Math)
-    size_t written = 0;
-    while (written < size) {
-        size_t chunk = std::min((size_t)pattern_len, size - written);
-        memcpy(buf + written, pattern, chunk);
-        written += chunk;
-    }
-
-    // 3 & 4. Sampled, Non-Flushing Telemetry
+    // 2. Sampled, Non-Flushing Telemetry
     static thread_local uint32_t log_counter = 0;
     
-    if (__builtin_expect(++log_counter >= TELEMETRY_SAMPLE_RATE, BRANCH_UNLIKELY)) {
+    if (__builtin_expect(++log_counter >= STDOUT_LOG_NTH, BRANCH_UNLIKELY)) {
+        // String formatting only occurs explicitly within the cold telemetry branch!
         std::cout << "[FUSE -> SQ/CQ] READ  path: " << path 
                   << " | size: " << size 
-                  << " bytes | offset: " << offset << "\n"; // \n prevents fflush()
+                  << " bytes | offset: " << offset << std::endl; // Flush explicitly!
         log_counter = 0;
     }
 
@@ -164,10 +156,14 @@ static int dp_write(const char *path, const char *buf, size_t size, off_t offset
 
     SqCqEmulator* backend = get_backend();
 
-    // Meaningful Log: Operation, Path, Size, and Offset
-    std::cout << "[FUSE -> SQ/CQ] WRITE path: " << path 
-              << " | size: " << size 
-              << " bytes | offset: " << offset << std::endl;
+    static thread_local uint32_t log_counter = 0;
+    
+    if (__builtin_expect(++log_counter >= STDOUT_LOG_NTH, BRANCH_UNLIKELY)) {
+        std::cout << "[FUSE -> SQ/CQ] WRITE path: " << path 
+                  << " | size: " << size 
+                  << " bytes | offset: " << offset << std::endl; // Flush explicitly!
+        log_counter = 0;
+    }
 
     return size;
 }

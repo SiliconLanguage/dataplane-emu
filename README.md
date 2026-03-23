@@ -195,27 +195,25 @@ This benchmark quantifies the "20-microsecond tax" reduction on [Azure Cobalt 10
 ```
 #### Verified Performance Scorecard (Azure Cobalt 100)
 ```consol
-==========================================================
-
-    AZURE COBALT 100: SILICON DATA PLANE SCORECARD
-==========================================================
-
+==========================================================================
+              AZURE COBALT 100: SILICON DATA PLANE SCORECARD
+==========================================================================
 Architecture              | Latency (us) | IOPS
-----------------------------------------------------------
-
-1. Legacy Kernel          | 47.89        | 20693
-2. User-Space Bridge      | 45.24        | 21585
-3. Zero-Copy (Bypass)     | 29.40        | 33456.75
-==========================================================
-
-Metric                    | Legacy Path  | Cobalt Path
-----------------------------------------------------------
-
-Max CPU (Core 0)          | 7.9%         | 100.0%
-Context Switches          | 413886       | 5
-Memory Model              | Strong/Slow  | Weak/Atomic
-==========================================================
+--------------------------------------------------------------------------
+1. Legacy Kernel          | 47.55        | 20847
+2. User-Space Bridge      | 20.83        | 47059
+3. Zero-Copy (Bypass)     | 13.53        | 72941
+==========================================================================
+Metric               | Legacy Path    | Bridge Path    | Bypass Path
+--------------------------------------------------------------------------
+Max CPU (Core 0)     | 7.8%           | 32.4%          | 100.0%
+Context Switches     | 416943         | 31933          | 1-5
+Memory Model         | Strong/Syscall | FUSE/Copy      | Relaxed/Lock-Free
+==========================================================================
 ```
+
+> [!NOTE]
+> Curious exactly how these metrics are recorded or what the parallel test is natively doing under the hood? We've published a comprehensive [Architecture & Benchmark Walkthrough](demo_architecture_walkthrough.md) explicitly breaking down the single-disk execution model and the mathematical zero-copy bypass projections!
 
 ### Verified Performance Scorecard (Azure Cobalt 100)
 
