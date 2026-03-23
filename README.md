@@ -195,30 +195,43 @@ This benchmark quantifies the "20-microsecond tax" reduction on [Azure Cobalt 10
 ```
 #### Verified Performance Scorecard (Azure Cobalt 100)
 ```consol
-===========================================================
+==========================================================
+
     AZURE COBALT 100: SILICON DATA PLANE SCORECARD
-===========================================================
+==========================================================
+
 Architecture              | Latency (us) | IOPS
------------------------------------------------------------
-1. Legacy Kernel          | 46.45        | 21333
-2. User-Space Bridge      | 49.14        | 19891
-3. Zero-Copy (Bypass)     | 31.94        | 30831.05
-===========================================================
+----------------------------------------------------------
+
+1. Legacy Kernel          | 47.89        | 20693
+2. User-Space Bridge      | 45.24        | 21585
+3. Zero-Copy (Bypass)     | 29.40        | 33456.75
+==========================================================
+
 Metric                    | Legacy Path  | Cobalt Path
------------------------------------------------------------
-Max CPU (Core 0)          | 7.7%         | 100.0%
-Context Switches          | 12800        | 9
+----------------------------------------------------------
+
+Max CPU (Core 0)          | 7.9%         | 100.0%
+Context Switches          | 413886       | 5
 Memory Model              | Strong/Slow  | Weak/Atomic
-===========================================================
+==========================================================
+
+🎯 INSIGHT: 5 context switches proves our reactor is polling.
 ```
+
+### Verified Performance Scorecard (Azure Cobalt 100)
 
 | Architecture | Latency (μs) | IOPS | Context Switches |
 | :--- | :--- | :--- | :--- |
-| **1. Legacy Kernel (XFS)** | 40-50 | ~20,000 | ~12,000+ |
-| **2. User-Space Bridge** | 40-50 | ~20,000 | **5-17** |
-| **3. Zero-Copy (Bypass)** | **~31*** | **>30,000*** | **0** |
+| **1. Legacy Kernel (XFS)** | 40 - 50 | ~20,000 | >400,000 |
+| **2. User-Space Bridge** | 42 - 48 | ~20,000 | 5 - 15 |
+| **3. Zero-Copy (Bypass)** | ~29* | >33,000* | 0 |
 
-\* *Actual measured bare-metal performance via SPDK engine. This represents the true hardware capability unlocked once legacy FUSE/POSIX memory-copy overheads are eliminated via our `LD_PRELOAD` interception bridge.*
+> **[*]** Representing raw SPDK hardware performance without POSIX/FUSE overhead.
 
-**Microarchitectural Insight:**
-The **single digit context switches** recorded on the Cobalt Path confirm the [sq_cq.cpp](https://github.com/SiliconLanguage/dataplane-emu/blob/main/src/sq_cq.cpp) reactor is successfully polling in user-space. This bypasses the kernel's interrupt-driven storage stack, allowing for deterministic I/O performance optimized for ARM64 weak memory models.
+#### 🔍 Performance Analysis: The "FUSE Tax" vs. Polling Efficiency
+A critical observation in our benchmark is that the **User-Space Bridge** matches the Legacy Kernel's IOPS despite reducing context switches by **99.9%**. 
+
+1. **The Success:** The drop from 400,000+ to 5-15 context switches proves the sq_cq.cpp reactor is successfully polling on the Cobalt 100 cores. This architecture is specifically optimized for ARM64 weak memory models, ensuring deterministic I/O performance by bypassing the kernel's interrupt-driven stack.
+2. **The Bottleneck:** The IOPS are currently capped at ~20,000 due to the **"FUSE Tax"**—the kernel-to-user memory copies required by the FUSE protocol. Even with a polling driver, these copies consume the CPU cycles needed for higher throughput.
+3. **The Solution:** This validates the shift to **Phase 5 (LD_PRELOAD)**. By intercepting syscalls at the `glibc` level, we eliminate these memory copies, unlocking the true **33,000+ IOPS** hardware potential demonstrated in the Zero-Copy Bypass results.
