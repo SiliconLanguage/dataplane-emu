@@ -215,8 +215,6 @@ Max CPU (Core 0)          | 7.9%         | 100.0%
 Context Switches          | 413886       | 5
 Memory Model              | Strong/Slow  | Weak/Atomic
 ==========================================================
-
-🎯 INSIGHT: 5 context switches proves our reactor is polling.
 ```
 
 ### Verified Performance Scorecard (Azure Cobalt 100)
