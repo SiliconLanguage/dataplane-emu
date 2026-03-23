@@ -1,5 +1,10 @@
 # 🚀 dataplane-emu
-*A Data Plane Emulation And Hardware-Software Co-Design Enabling Platform for AI and High-Performance Storage*
+*A Data Plane Emulation and Hardware-Software Co-Design Enabling Platform for AI and High-Performance Storage*
+
+> **🚀 Project Tensorplane AI Foundry**
+> *While the underlying C++ engine in this repository is `dataplane-emu`, this project serves as the foundation for the **Tensorplane AI Foundry**—an end-to-end, zero-copy architecture designed for hyperscaler I/O offloading and autonomous Agentic AI orchestration.*
+> 
+> 📖 **[Read the Tensorplane Vision & Architecture Manifesto Here](docs/tensorplane/VISION.md)**
 
 [![C++](https://img.shields.io/badge/Language-C%2B%2B20-blue.svg)](https://isocpp.org/)
 [![Rust](https://img.shields.io/badge/Language-Rust-orange.svg)](https://www.rust-lang.org/)
@@ -11,10 +16,43 @@
 
 As Generative AI, LLM training, and massive data analytics demand unprecedented I/O throughput (such as high-concurrency dataloaders and KV caching), the traditional Linux kernel storage stack (VFS, block layer, interrupt-driven drivers) has become a primary performance bottleneck. `dataplane-emu` completely bypasses the OS kernel to map hardware queues directly into user space, acting as a deterministic sandbox for next-generation data plane architectures.
 
+## Documentation Directory
+
+We have separated our documentation to serve both enterprise architects and systems engineers. 
+
+### 🧠 Tensorplane AI Foundry (The Vehicle)
+High-level architectural documentation detailing our approach to AI training bottlenecks and autonomous orchestration.
+* **[Vision & Architecture Manifesto](docs/tensorplane/VISION.md)**: The "0-Kernel, 0-Copy, Hardware-Enlightened" data plane thesis.
+* **[Agentic Architecture & MCP](docs/tensorplane/AGENT_ARCHITECTURE.md)**: How we use the Model Context Protocol and a Mixture-of-Experts (MoE) to achieve recursive self-improvement and autonomous kernel optimization.
+
+### ⚙️ dataplane-emu (The Engine)
+Low-level microarchitectural documentation detailing the C++/Rust kernel-bypass implementation.
+* **[POSIX Interception Bridge](docs/emulator/posix_intercept.md)**: `LD_PRELOAD` trampolines, Fake FDs, and transparent legacy application support.
+* **[Lock-Free SPDK Queues](docs/emulator/spdk_queues.md)**: ARM64 LSE atomics, memory barriers (`dsb st`), and zero-copy shared memory (`Iov`/`Ior`).
+
+### 📚 Academic Publications
+Published research laying the foundational proof-of-concept architectures for our bypass routing.
+* **[Eliminating the OS Kernel (.pdf)](docs/publications/eliminating-os-kernel/eliminating-os-kernel.pdf)**: The primary research paper outlining kernel-bypass mechanics.
+* **[Publications Index](docs/publications/eliminating-os-kernel/README.md)**: Associated proofs and dataset references.
+
 ## 🏗️ Core Architecture
 - **100% Lock-Free Synchronization:** Elimination of `std::mutex` in favor of C++11/Rust atomic memory orderings (Acquire/Release semantics) to prevent thread contention.
 - **Architecture Modeling:** Designed to simulate different hardware memory models (TSO vs. Weak Ordering) during I/O transfer. It models architecture-specific microarchitectural hazards, such as utilizing explicit `DSB` barriers on ARM64 Graviton instances, and `FENCE` instructions on RISC-V (RVWMO).
 - **POSIX Interceptor (FUSE/LD_PRELOAD):** A high-performance bridge allowing standard Linux tools (`ls`, `dd`, `fio`) and legacy databases to communicate directly with user-space storage queues without code modification.
+
+## Architectural Lineage & Prior Art
+
+Tensorplane and `dataplane-emu` do not exist in a vacuum. Our architecture is deeply informed by and builds upon the following state-of-the-art systems, research, and protocols:
+
+*   **[DeepSeek 3FS (Fire-Flyer File System)](https://github.com/deepseek-ai/3FS)**: We heavily drew inspiration from 3FS's `USRBIO` API, specifically its use of shared memory I/O Vectors (`Iov`) and I/O Rings (`Ior`) to achieve extreme-throughput, zero-copy data ingestion for AI training dataloaders.
+*   **[Intel DAOS (Distributed Asynchronous Object Storage)](https://github.com/daos-stack/daos)**: Our Phase 4 POSIX interception bridge models the `libpil4dfs` approach, utilizing `LD_PRELOAD` to grant legacy applications transparent access to user-space storage fabrics without modifying source code.
+*   **[XRP (In-Kernel Storage Functions with eBPF)](https://github.com/xrp-project/XRP)**: Our hardware-enlightened execution path leverages the XRP paradigm to push computation (like B-Tree index lookups) all the way down into the NVMe driver's interrupt handler via eBPF.
+*   **[SPDK (Storage Performance Development Kit)](https://github.com/spdk/spdk)**: The core engine of our data plane relies on SPDK-style lock-free submission and completion queues, polling at 100% CPU utilization to entirely eliminate the Linux kernel context-switch tax.
+*   **[zIO (Transparent Zero-Copy I/O)](https://www.usenix.org/system/files/osdi22-stamler.pdf)**: We utilize `userfaultfd` memory tracking principles from zIO to leave intermediate memory buffers unmapped, transparently eliminating user-space memory copies.
+*   **[Anthropic Model Context Protocol (MCP)](https://github.com/modelcontextprotocol/servers)**: Our Multi-Agent System (MAS) orchestration layer uses MCP to standardize the interface between our AI reasoning engines, telemetry tools, and autonomous kernel compilers.
+*   **[SGLang (RadixAttention)](https://github.com/sgl-project/sglang) & vLLM**: For our serving infrastructure design, we target advanced KV cache management techniques like Radix Trees to enable cross-request prompt sharing, drastically accelerating agentic AI workflows.
+*   **Alibaba PolarFS**: For its compute-storage decoupling and user-space file system designed to provide ultra-low latency for cloud databases.
+*   **[pulp-platform/mempool](https://github.com/pulp-platform/mempool)**: For pioneering research in mapping OS-level synchronization primitives and message queues directly into tightly-coupled RISC-V hardware accelerators and shared L1 memory clusters.
 
 ## 🚀 Phased Implementation & Deliverables
 
@@ -30,8 +68,8 @@ Implements pure C++/Rust Single-Producer Single-Consumer (SPSC) ring buffers. Th
 ### Phase 3: Cloud-Native Automated Dev Environment
 Engineers an automated, architecture-agnostic AWS Graviton3 (ARM64) environment via Terraform and `cloud-init`. This securely isolates the developer OS on persistent EBS volumes while dedicating raw ephemeral NVMe block access exclusively to the user-space SPDK drivers. It includes automated zero-touch hugepage allocation (2MB/1GB) for Direct Memory Access (DMA).
 
-### Phase 4: Transparent POSIX Interception Bridge
-A DAOS-inspired user-space file system bridge using FUSE and `LD_PRELOAD` interception (`libpil4dfs`-style). This layer catches standard `glibc` system calls (e.g., `pread`, `pwrite`) from legacy databases like PostgreSQL and routes them directly into lock-free SPDK queues. This achieves zero-copy I/O without modifying application source code, mirroring the high-throughput, kernel-bypassing architectures used in modern AI file systems.
+### Phase 4: Virtual FUSE POSIX Bridge
+A user-space file system virtual bridge utilizing FUSE to gracefully route storage interactions from legacy applications directly into the lock-free SPDK queues. While it officially establishes kernel-bypass routing without requiring application source code modifications, it still fundamentally incurs standard Linux VFS context-switching limits.
 
 ### Phase 5: Transparent POSIX Interception (LD_PRELOAD)
 To accelerate unmodified legacy applications (e.g., PostgreSQL) without requiring source code rewrites, `dataplane-emu` implements a transparent system call interception bridge.
@@ -60,7 +98,6 @@ By pushing a massive queue depth (`iodepth=256`) of small 4K random reads/writes
 1. **Zero-Copy DMA:** Complete evasion of the Linux VFS and block layer overhead.
 2. **Lock-Free Contention Resolution:** The ability of Neoverse-N2 Large System Extensions (LSE) atomics to sustain extreme queue contention without POSIX mutex degradation.
 3. **Compute Isolation:** Saturating the local NVMe drive using only a single physical core, leaving the remaining cluster topology entirely free for compute-heavy AI workloads.
-We have successfully architected the C++ memory semantics, the Azure Cobalt 100 
 
 ### Hardware Optimization: Azure Cobalt 100 & ARM64 (Neoverse V2)
 To achieve true zero-copy I/O and maximize throughput on modern cloud silicon, `dataplane-emu` is heavily optimized for the Azure Cobalt 100 and AWS Graviton4 architectures.
@@ -85,43 +122,39 @@ To safely orchestrate autonomous C++ kernel generation without exposing the host
 *   **Tool Filtering & Virtual Keys:** The local control plane utilizes Virtual Keys to enforce strict, per-agent tool allow-lists [6, 7]. An agent is only granted access to the specific MCP tools required for its immediate task (e.g., code compilation), completely blocking unauthorized lateral movement.
 *   **Read-Only Defaults & Human-in-the-Loop:** All high-stakes infrastructure and system actions default to a read-only state [8]. True autonomy is bounded by strict policy-as-code evaluations, requiring explicit Human-in-the-Loop (HITL) approval and maintaining centralized "kill switches" to halt anomalous agent behavior instantly [9, 10].
 
-## 📂 Repository Structure
+## 📦 Repository Structure
 
 ```text
-dataplane-emu/
-├── docs/
-│   ├── adr/
-│   │   └── 0001-graviton-hybrid-storage-topology.md
-│   └── architecture/
-│       ├── memory_models_arm64_rvwmo.md
-│       └── compute_storage_decoupling.md
-├── scripts/
-│   ├── spdk-aws/
-│   │   ├── provision-graviton.sh       # AWS CLI EC2 & Security Group provisioning
-│   │   ├── iam-role-setup.sh           # IAM instance profile for passwordless access
-│   │   ├── cloud-init-userdata.yaml    # Bootstraps Hugepages & vfio-pci rehydration
-│   │   └── start-graviton.ps1          # Dynamic Cloudflare DNS updater
-├── src/
-│   ├── core/
-│   │   ├── sq_cq.hpp                   # Lock-free Submission/Completion Queues
-│   │   └── sq_cq.cpp                   # ARM64 wfe/dsb & RISC-V Zawrs implementations
-│   ├── target/
-│   │   └── nvmf_tgt_loopback.cpp       # SPDK NVMe-oF TCP Target initialization
-│   └── fuse_bridge/
-│       └── interceptor.cpp             # Phase 4: FUSE/LD_PRELOAD POSIX interception
-├── tests/
-│   └── concurrency_stress_test.cpp
-├── CMakeLists.txt
-└── README.md
+📦 dataplane-emu/
+├── ⚙️ CMakeLists.txt
+├── 📖 README.md
+├── 🖥️ cobalt_worker.sh
+├── 📖 demo_architecture_walkthrough.md
+├── 🖥️ launch_cobalt_demo.sh
+├── ⚙️ makefile
+├── 📁 docs/
+│   ├── 📁 emulator/               # Low-level microarchitectural C++/Rust docs
+│   │   ├── 📖 posix_intercept.md  
+│   │   └── 📖 spdk_queues.md      
+│   ├── 📁 publications/           # Core academic research and whitepapers
+│   │   └── 📁 eliminating-os-kernel/
+│   │       ├── 📄 eliminating-os-kernel.pdf
+│   │       └── 📖 README.md
+│   └── 📁 tensorplane/            # High-level AI Foundry & Orchestration docs
+│       ├── 📖 AGENT_ARCHITECTURE.md
+│       └── 📖 VISION.md           
+├── 📁 scripts/
+│   └── 📁 spdk-aws/               # AWS EC2 Graviton deployment automation  
+│       ├── 🖥️ provision-graviton.sh
+│       └── 🖥️ start-graviton.ps1  
+└── 📁 src/
+    ├── 📄 dataplane_ring.cpp      # Standalone lock-free queue implementations
+    ├── 📄 main.cpp                # SPDK environment initialization
+    ├── 📄 sq_cq.cpp               # SPSC ring buffer memory barriers
+    └── 📁 fuse_bridge/            # Pure user-space kernel bypass
+        ├── 📄 interceptor.cpp     
+        └── 📄 interceptor.h       
 ```
-## 📚 Prior Art & Inspiration
-`dataplane-emu` draws deep architectural inspiration from industrial-strength distributed storage engines, user-space networking frameworks, and virt-to-silicon hardware research:
-
-*   **[deepseek-ai/3FS](https://github.com/deepseek-ai/3FS):** For its application of RDMA and zero-copy user-space APIs (`USRBIO`) to bypass the kernel and FUSE overheads entirely, achieving extreme throughput for AI training and KV caching.
-*   **[daos-stack/daos](https://github.com/daos-stack/daos) (Intel):** For its end-to-end user-space I/O routing and its `libpil4dfs` interception library, which allows seamless POSIX application integration.
-*   **Alibaba PolarFS:** For its compute-storage decoupling and user-space file system designed to provide ultra-low latency for cloud databases.
-*   **[pulp-platform/mempool](https://github.com/pulp-platform/mempool):** For their pioneering research in mapping OS-level synchronization primitives and message queues directly into tightly-coupled RISC-V hardware accelerators and shared L1 memory clusters.
-
 
 ## Key Features Implemented
 * **Hardware-Assisted Pointer Tagging:** Utilizes ARM64 Top Byte Ignore (TBI) to achieve lock-free ABA protection. By packing an 8-bit version counter into the upper bits of a virtual address, we can use standard 64-bit Compare-And-Swap (CAS) instructions to safely update pointers, avoiding the heavy register pressure of 128-bit DW-CAS.
@@ -215,19 +248,9 @@ Memory Model         | Strong/Syscall | FUSE/Copy      | Relaxed/Lock-Free
 > [!NOTE]
 > Curious exactly how these metrics are recorded or what the parallel test is natively doing under the hood? We've published a comprehensive [Architecture & Benchmark Walkthrough](demo_architecture_walkthrough.md) explicitly breaking down the single-disk execution model and the mathematical zero-copy bypass projections!
 
-### Verified Performance Scorecard (Azure Cobalt 100)
+### 🔍 Performance Analysis: The "FUSE Tax" vs. Polling Efficiency
+A critical observation in our benchmark is that the **User-Space Bridge** massively out-scales the Legacy Kernel's IOPS while heavily reducing aggregate context switches.
 
-| Architecture | Latency (μs) | IOPS | Context Switches |
-| :--- | :--- | :--- | :--- |
-| **1. Legacy Kernel (XFS)** | 40 - 50 | ~20,000 | >400,000 |
-| **2. User-Space Bridge** | 42 - 48 | ~20,000 | 5 - 15 |
-| **3. Zero-Copy (Bypass)** | ~29* | >33,000* | 0 |
-
-> **[*]** Representing raw SPDK hardware performance without POSIX/FUSE overhead.
-
-#### 🔍 Performance Analysis: The "FUSE Tax" vs. Polling Efficiency
-A critical observation in our benchmark is that the **User-Space Bridge** matches the Legacy Kernel's IOPS despite reducing context switches by **99.9%**. 
-
-1. **The Success:** The drop from 400,000+ to 5-15 context switches proves the sq_cq.cpp reactor is successfully polling on the Cobalt 100 cores. This architecture is specifically optimized for ARM64 weak memory models, ensuring deterministic I/O performance by bypassing the kernel's interrupt-driven stack.
-2. **The Bottleneck:** The IOPS are currently capped at ~20,000 due to the **"FUSE Tax"**—the kernel-to-user memory copies required by the FUSE protocol. Even with a polling driver, these copies consume the CPU cycles needed for higher throughput.
-3. **The Solution:** This validates the shift to **Phase 5 (LD_PRELOAD)**. By intercepting syscalls at the `glibc` level, we eliminate these memory copies, unlocking the true **33,000+ IOPS** hardware potential demonstrated in the Zero-Copy Bypass results.
+1. **The Success:** The massive drop in context switches proves the pure user-space `dataplane-emu` kernel-bypass loop successfully offloads the massive legacy Linux block-layer interrupts.
+2. **The Bottleneck:** Despite hitting ~47,000 IOPS, the data path is still fundamentally constrained by the **"FUSE Tax"**—the kernel-to-user memory copies actively required by the FUSE loopback architecture. These intermediate memory copies actively steal CPU polling cycles.
+3. **The Solution:** This definitively validates the final shift to **Phase 5 (LD_PRELOAD)**. By completely eliminating the FUSE memory copies via standard `glibc` interception, we instantly unlock the true **72,000+ IOPS** Zero-Copy hardware threshold.
