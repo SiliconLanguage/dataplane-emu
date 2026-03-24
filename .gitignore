@@ -47,6 +47,10 @@
 #build artifacts
 build/
 
+#spdk
+spdk/
+
 #environment variables
 .env
 scripts/spdk-aws/.env
+*.json
