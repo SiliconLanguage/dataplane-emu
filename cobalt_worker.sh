@@ -1,5 +1,5 @@
 #!/bin/bash
-cd ~/dataplane-emu
+cd "$(dirname "$0")"
 
 spinner() {
     local pid=$1
@@ -43,26 +43,67 @@ clear
 echo "🚀 STAGE 2: Benchmarking User-Space Bridge..."
 ( sudo fio --name=fuse --filename=/tmp/cobalt/nvme_raw_0 --rw=randrw --bs=4k --size=100M --direct=1 --iodepth=32 --runtime=15 --group_reporting --output-format=json --output=fuse.json > /dev/null 2>&1 ) &
 progress_bar $! "🔥 Stress-Testing Silicon Data Plane Bridge (15s)..." 16
-sudo chmod 666 fuse.json
+sudo chmod 666 fuse.json x.json 2>/dev/null || true
 
-# Parse Results
-XL=$(jq -r '((.jobs[0].read.clat_ns.mean//0)+(.jobs[0].write.clat_ns.mean//0))/2000' x.json | awk '{v=$1} END {printf "%.2f", v+0}')
-XI=$(jq -r '(.jobs[0].read.iops//0)+(.jobs[0].write.iops//0)' x.json | awk '{v=$1} END {printf "%.0f", v+0}')
-XC=$(jq -r '(.jobs[0].usr_cpu//0)+(.jobs[0].sys_cpu//0)' x.json | awk '{v=$1} END {printf "%.1f%%", v+0}')
-XS=$(jq -r '(.jobs[0].ctx//0)' x.json | awk '{v=$1} END {print v+0}')
+# Parse FIO JSON
+# Strip non-JSON FIO warnings from the output using sed
+JX=$(sed -n '/^{/,$p' x.json 2>/dev/null || echo "{}")
+JF=$(sed -n '/^{/,$p' fuse.json 2>/dev/null || echo "{}")
 
-FL=$(jq -r '((.jobs[0].read.clat_ns.mean//0)+(.jobs[0].write.clat_ns.mean//0))/2000' fuse.json | awk '{v=$1} END {printf "%.2f", v+0}')
-FI=$(jq -r '(.jobs[0].read.iops//0)+(.jobs[0].write.iops//0)' fuse.json | awk '{v=$1} END {printf "%.0f", v+0}')
-FC=$(jq -r '(.jobs[0].usr_cpu//0)+(.jobs[0].sys_cpu//0)' fuse.json | awk '{v=$1} END {printf "%.1f%%", v+0}')
-FS=$(jq -r '(.jobs[0].ctx//0)' fuse.json | awk '{v=$1} END {print v+0}')
+XL=$(echo "$JX" | jq -r '((.jobs[0].read.clat_ns.mean//0)+(.jobs[0].write.clat_ns.mean//0))/2000' | awk '{v=$1} END {printf "%.2f", v+0}')
+XI=$(echo "$JX" | jq -r '(.jobs[0].read.iops//0)+(.jobs[0].write.iops//0)' | awk '{v=$1} END {printf "%.0f", v+0}')
+XC=$(echo "$JX" | jq -r '(.jobs[0].usr_cpu//0)+(.jobs[0].sys_cpu//0)' | awk '{v=$1} END {printf "%.1f%%", v+0}')
+XS=$(echo "$JX" | jq -r '(.jobs[0].ctx//0)' | awk '{v=$1} END {print v+0}')
+
+FL=$(echo "$JF" | jq -r '((.jobs[0].read.clat_ns.mean//0)+(.jobs[0].write.clat_ns.mean//0))/2000' | awk '{v=$1} END {printf "%.2f", v+0}')
+FI=$(echo "$JF" | jq -r '(.jobs[0].read.iops//0)+(.jobs[0].write.iops//0)' | awk '{v=$1} END {printf "%.0f", v+0}')
+FC=$(echo "$JF" | jq -r '(.jobs[0].usr_cpu//0)+(.jobs[0].sys_cpu//0)' | awk '{v=$1} END {printf "%.1f%%", v+0}')
+FS=$(echo "$JF" | jq -r '(.jobs[0].ctx//0)' | awk '{v=$1} END {print v+0}')
 
 PL=$(echo "scale=2; $FL * 0.65" | bc); PI=$(echo "$FI * 1.55" | bc | awk '{printf "%.0f", $0}')
 E=$(pgrep dataplane-emu | head -n 1)
 CC=$(grep -i "ctxt" /proc/$E/status | awk '{s+=$2} END {print s}')
 
 clear
+# Dynamically determine the model name (handling differences on ARM vs x86 and Cloud vs Bare Metal)
+CPU_PART_HEX=$(grep -im1 "CPU part" /proc/cpuinfo | awk -F: '{print $2}' | tr -d " \t\n\r" | tr 'A-Z' 'a-z')
+case "$CPU_PART_HEX" in
+    "0xd49") CPU_DESC="Azure Cobalt 100 (Neoverse-N2)" ;;
+    "0xd40") CPU_DESC="AWS Graviton3 (Neoverse-V1)" ;;
+    "0xd0c") CPU_DESC="AWS Graviton2 (Neoverse-N1)" ;;
+    "0xd4f") CPU_DESC="AWS Graviton4 / NVIDIA Grace (Neoverse-V2)" ;;
+    *) CPU_DESC="" ;;
+esac
+
+MODEL_NAME=$(lscpu | grep -i "Model name" | cut -d':' -f2 | awk '{$1=$1};1')
+if [ -z "$MODEL_NAME" ]; then
+    MODEL_NAME=$(cat /sys/devices/virtual/dmi/id/product_name 2>/dev/null)
+fi
+if [ -z "$MODEL_NAME" ]; then
+    MODEL_NAME=$(uname -m)
+fi
+
+DISK_CTRL=""
+if [ -f "/tmp/disk_model.txt" ]; then
+    DISK_CTRL=$(cat /tmp/disk_model.txt)
+fi
+
+if [ -n "$CPU_DESC" ]; then
+    DISPLAY_TITLE="$CPU_DESC | $MODEL_NAME | SILICON DATA PLANE SCORECARD"
+else
+    DISPLAY_TITLE="$MODEL_NAME | SILICON DATA PLANE SCORECARD"
+fi
+
 echo "=========================================================================="
-echo "              AZURE COBALT 100: SILICON DATA PLANE SCORECARD"
+echo "  $DISPLAY_TITLE"
+if [ -n "$DISK_CTRL" ]; then
+    if [[ "$DISK_CTRL" == *"Amazon EC2 NVMe"* ]]; then
+        DISK_CTRL="$DISK_CTRL (Nitro SSD Controller)"
+    elif [[ "$DISK_CTRL" == *"Microsoft"* ]] || [[ "$DISK_CTRL" == *"Virtual Disk"* ]] || [[ "$DISK_CTRL" == *"Azure"* ]]; then
+        DISK_CTRL="$DISK_CTRL (Azure Hyper-V NVMe)"
+    fi
+    echo "  Target Drive: $DISK_CTRL"
+fi
 echo "=========================================================================="
 printf "%-25s | %-12s | %-12s\n" "Architecture" "Latency (us)" "IOPS"
 echo "--------------------------------------------------------------------------"

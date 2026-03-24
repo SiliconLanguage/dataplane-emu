@@ -4,17 +4,34 @@ project(dataplane-emu CXX C)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
-# --- Silicon-Specific Optimization (Azure Cobalt 100) ---
+# --- Explicit Silicon-Specific Optimization Mapping ---
+# Set via command line: cmake -DTARGET_SILICON=GRAVITON3 ..
+set(TARGET_SILICON "GENERIC" CACHE STRING "Target Silicon (COBALT100, GRAVITON2, GRAVITON3, GRAVITON4, GENERIC)")
+
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
-    # FIX: Use RESULT_VARIABLE to check grep's exit code (0 = found)
-    execute_process(COMMAND grep -qi "0xd49" /proc/cpuinfo RESULT_VARIABLE IS_N2)
-    if(IS_N2 EQUAL 0)
+    if(TARGET_SILICON STREQUAL "COBALT100")
         set(ARCH_FLAGS "-mcpu=neoverse-n2")
         message(STATUS "🚀 Target: Azure Cobalt 100 (Neoverse-N2)")
-    else()
+        
+    elseif(TARGET_SILICON STREQUAL "GRAVITON4")
+        set(ARCH_FLAGS "-mcpu=neoverse-v2")
+        message(STATUS "🚀 Target: AWS Graviton4 (Neoverse-V2)")
+        
+    elseif(TARGET_SILICON STREQUAL "GRAVITON3")
         set(ARCH_FLAGS "-mcpu=neoverse-v1")
-        message(STATUS "🚀 Target: AWS Graviton (Neoverse-V1)")
+        message(STATUS "🚀 Target: AWS Graviton3 (Neoverse-V1)")
+        
+    elseif(TARGET_SILICON STREQUAL "GRAVITON2")
+        set(ARCH_FLAGS "-mcpu=neoverse-n1")
+        message(STATUS "🚀 Target: AWS Graviton2 (Neoverse-N1)")
+        
+    else()
+        # AWS Recommended balanced flag for all modern ARM64
+        set(ARCH_FLAGS "-march=armv8.2-a")
+        message(STATUS "🚀 Target: Generic ARM64v8.2-a")
     endif()
+
+    # Apply outline-atomics for runtime LSE detection
     set(CPU_FLAGS ${ARCH_FLAGS} "-moutline-atomics")
 else()
     set(CPU_FLAGS "-march=native")
@@ -46,7 +63,7 @@ add_executable(dataplane-emu
     src/fuse_bridge/interceptor.cpp
 )
 target_include_directories(dataplane-emu PRIVATE include "${CMAKE_CURRENT_SOURCE_DIR}/spdk/include" ${FUSE3_INCLUDE_DIRS})
-target_link_libraries(dataplane-emu PRIVATE project_options ${SPDK_LIBS} ${FUSE3_LIBRARIES} pthread dl uuid numa)
+target_link_libraries(dataplane-emu PRIVATE project_options ${FUSE3_LIBRARIES} pthread dl)
 
 # --- Target: Ring Test ---
 add_executable(dataplane-ring-test src/dataplane_ring.cpp)

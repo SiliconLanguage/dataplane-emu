@@ -248,6 +248,52 @@ Memory Model         | Strong/Syscall | FUSE/Copy      | Relaxed/Lock-Free
 ==========================================================================
 ```
 
+```consol
+=========================================================================
+  AWS Graviton3 (Neoverse-V1) | c7gd.xlarge | SILICON DATA PLANE SCORECARD
+==========================================================================
+Architecture              | Latency (us) | IOPS
+--------------------------------------------------------------------------
+1. Legacy Kernel          | 714.20       | 1399
+2. User-Space Bridge      | 33.34        | 29257
+3. Zero-Copy (Bypass)     | 21.67        | 45348
+==========================================================================
+Metric               | Legacy Path    | Bridge Path    | Bypass Path
+--------------------------------------------------------------------------
+Max CPU (Core 0)     | 0.6%           | 25.2%          | 100.0%
+Context Switches     | 27979          | 31971          | 2
+Memory Model         | Strong/Syscall | FUSE/Copy      | Relaxed/Lock-Free
+==========================================================================
+
+==========================================================================
+  AWS Graviton3 (Neoverse-V1) | c7gd.xlarge | SILICON DATA PLANE SCORECARD
+  Target Drive: Amazon EC2 NVMe Instance Storage (Nitro SSD Controller)
+==========================================================================
+Architecture              | Latency (us) | IOPS
+--------------------------------------------------------------------------
+1. Legacy Kernel          | 51.42        | 19260
+2. User-Space Bridge      | 12.28        | 78287
+3. Zero-Copy (Bypass)     | 7.98         | 121345
+==========================================================================
+Metric               | Legacy Path    | Bridge Path    | Bypass Path
+--------------------------------------------------------------------------
+Max CPU (Core 0)     | 7.2%           | 44.2%          | 100.0%
+Context Switches     | 385230         | 31933          | 7
+Memory Model         | Strong/Syscall | FUSE/Copy      | Relaxed/Lock-Free
+==========================================================================
+
+```
+
+> [!TIP]
+> **Can't Copy/Paste Text During the Demo?**
+> The `launch_cobalt_demo.sh` script executes the dashboard inside `tmux` with global mouse tracking enabled. This highlights panes securely but actively hijacks your terminal emulator's native text selection capability!
+> 
+> **Workaround 1: Tmux Zoom (Recommended)**
+> Because `tmux` splits the screen, highlighting text linearly will bleed into the adjacent pane. To fix this, press **`Ctrl+B`**, release, and then press **`z`**. This zooms your current pane to full screen. You can then safely hold **`Shift`** and drag your mouse to copy the text without hitting the other pane. Press **`Ctrl+B`** then **`z`** again to un-zoom.
+>
+> **Workaround 2: Block Selection**
+> Depending on your terminal (like VS Code, Windows Terminal, or iTerm), you can hold down the **`Alt`** (or **`Option`**) key while dragging to draw a "rectangular block" and highlight text strictly inside one pane.
+
 > [!NOTE]
 > Curious exactly how these metrics are recorded or what the parallel test is natively doing under the hood? We've published a comprehensive [Architecture & Benchmark Walkthrough](demo_architecture_walkthrough.md) explicitly breaking down the single-disk execution model and the mathematical zero-copy bypass projections!
 

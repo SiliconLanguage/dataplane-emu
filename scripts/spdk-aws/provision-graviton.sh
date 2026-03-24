@@ -11,7 +11,7 @@ INSTANCE_ID=$(aws ec2 run-instances \
     --key-name spdk-dev-key \
     --subnet-id "$SUBNET_ID" \
     --iam-instance-profile Name=EC2-MultiArch-Role-Profile \
-    --user-data file://cloud-init-userdata.yaml \
+    --user-data "file://$(dirname "$0")/cloud-init-userdata.yaml" \
     --query 'Instances[0].InstanceId' --output text)
 
 aws ec2 wait instance-running --instance-ids "$INSTANCE_ID"
