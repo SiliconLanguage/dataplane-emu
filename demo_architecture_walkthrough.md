@@ -1,31 +1,31 @@
-# Azure Cobalt 100 Demo: Technical Walkthrough
+# Azure Arm Neoverse-N2 Demo: Technical Walkthrough
 
-This document explicitly breaks down step-by-step what occurs under the hood when you run `./launch_cobalt_demo.sh` and perfectly traces how every single number on the final architectural SCORECARD is captured or synthesized.
+This document explicitly breaks down step-by-step what occurs under the hood when you run `./launch_arm_neoverse_demo.sh` and perfectly traces how every single number on the final architectural SCORECARD is captured or synthesized.
 
 ---
 
 ### Step 1: Initialization & Tmux Orchestration
-When you execute `launch_cobalt_demo.sh`, the terminal immediately spawns a split-window `tmux` session named `d` to execute the data-plane engine and the benchmark worker in parallel.
+When you execute `launch_arm_neoverse_demo.sh`, the terminal immediately spawns a split-window `tmux` session named `d` to execute the data-plane engine and the benchmark worker in parallel.
 1. **Sanitizing Hardware:** It calls `setup.sh` via `sudo` to release and re-allocate 2,048MB of contiguous physical RAM (`HUGEMEM=2048`). DPDK completely relies on these 2MB pinned "hugepages" so the network cards (or simulated queues) can DMA memory blocks directly without triggering Virtual Memory translation faults.
-2. **Left Panel (`dataplane-emu`):** The emulator daemon launches as `root` (to lock the RAM). It explicitly maps a FUSE (Filesystem in Userspace) loopback file onto the file system at `/tmp/cobalt/nvme_raw_0`. Any reads/writes sent to this file will completely bypass the standard Linux kernel storage drivers (ext4/XFS), routing the raw buffer directly into our custom DPDK `rte_ring` queues in C++.
-3. **Right Panel (`cobalt_worker.sh`):** A bash orchestration script waits 5 seconds for the C++ daemon to stabilize, then fires off a series of highly aggressive `fio` storage micro-benchmarks.
+2. **Left Panel (`dataplane-emu`):** The emulator daemon launches as `root` (to lock the RAM). It explicitly maps a FUSE (Filesystem in Userspace) loopback file onto the file system at `/tmp/arm_neoverse/nvme_raw_0`. Any reads/writes sent to this file will completely bypass the standard Linux kernel storage drivers (ext4/XFS), routing the raw buffer directly into our custom DPDK `rte_ring` queues in C++.
+3. **Right Panel (`arm_neoverse_worker.sh`):** A bash orchestration script waits 5 seconds for the C++ daemon to stabilize, then fires off a series of highly aggressive `fio` storage micro-benchmarks.
 
 ---
 
 ### Step 2: Single-Disk Parallel Benchmarking
-The `cobalt_worker.sh` script executes two explicit, 15-second `fio` benchmarks simulating extreme 4KB mixed workloads (`rw=randrw, iodepth=256, direct=1`). Crucially, we utilize the single exposed Azure Cobalt NVMe namespace (`/dev/nvme0n1`) to test both the Legacy and Bypass architectures simultaneously without requiring dual SSDs! 
+The `arm_neoverse_worker.sh` script executes two explicit, 15-second `fio` benchmarks simulating extreme 4KB mixed workloads (`rw=randrw, iodepth=256, direct=1`). Crucially, we utilize the single exposed Azure Arm Neoverse NVMe namespace (`/dev/nvme0n1`) to test both the Legacy and Bypass architectures simultaneously without requiring dual SSDs! 
 
 - **1. Legacy Kernel Path (Physical SSD):** Benchmarks `/mnt/nvme_xfs`. This partition is natively formatted directly on the physical `/dev/nvme0n1` disk. This forces `fio` requests to travel through the absolute entirety of the Linux VFS (Virtual File System) and PCIe block-drivers. The CPU jumps back and forth from User Mode to Kernel Mode millions of times via heavy locking barriers (TSO).
-- **2. User-Space Bridge Path (Emulated Queue):** Benchmarks `/tmp/cobalt/nvme_raw_0`. Instead of hitting the physical SSD, the Linux kernel completely ignores this file and delegates the I/O to our `dataplane-emu` engine running in the left panel. The emulator processes the I/O in-memory using modeled DPDK queues. This explicitly isolates the true bottleneck for our comparison: the Kernel's software context-switching overhead, rather than raw NAND flash performance!
+- **2. User-Space Bridge Path (Emulated Queue):** Benchmarks `/tmp/arm_neoverse/nvme_raw_0`. Instead of hitting the physical SSD, the Linux kernel completely ignores this file and delegates the I/O to our `dataplane-emu` engine running in the left panel. The emulator processes the I/O in-memory using modeled DPDK queues. This explicitly isolates the true bottleneck for our comparison: the Kernel's software context-switching overhead, rather than raw NAND flash performance!
 
 ---
 
 ### Step 3: Capturing the Metrics
-Once `fio` completes its furious 15-second multi-threaded barrage, it spits the raw results out as two massive JSON files: `x.json` (Legacy) and `fuse.json` (Bridge). The `cobalt_worker.sh` script parses these identically using the `jq` tool.
+Once `fio` completes its furious 15-second multi-threaded barrage, it spits the raw results out as two massive JSON files: `x.json` (Legacy) and `fuse.json` (Bridge). The `arm_neoverse_worker.sh` script parses these identically using the `jq` tool.
 
 #### The Legacy Kernel & Bridge Path Metrics (True Hardware Measurements)
 The first two sections of the scorecard represent purely authentic, mathematically verified hardware outputs from `fio`:
-* **Latency ($XL, $FL):** Queried dynamically from `(.jobs[0].latency_us)`. The `cobalt_worker.sh` uses `bc` to cleanly divide the mean latency by 2000.
+* **Latency ($XL, $FL):** Queried dynamically from `(.jobs[0].latency_us)`. The `arm_neoverse_worker.sh` uses `bc` to cleanly divide the mean latency by 2000.
 * **IOPS ($XI, $FI):** Parsed by explicitly summing both read and write IOPS `(.jobs[0].read.iops + .jobs[0].write.iops)` and printing them using an `awk '%0.f'` formatter to guarantee clean integer alignment.
 * **Max CPU Core 0 ($XC, $FC):** Summed directly from the system CPU timers inside the JSON logs `(.jobs[0].usr_cpu + .jobs[0].sys_cpu)`. The Bridge FUSE daemon pegs the CPU to **~34%** because DPDK actively targets extreme processor utilization to aggressively poll memory rings instead of sleeping.
 * **Context Switches ($XS, $FS):** Extracted purely from `(.jobs[0].ctx)`. Notice the massive drop! Traditional Linux Syscalls ($XS) generate *hundreds of thousands* of interrupts. The FUSE bridge bypass slashes this to just ~30,000, completely unblocking the kernel.

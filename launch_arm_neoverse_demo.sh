@@ -22,7 +22,14 @@ fi
 export PCI_BLOCKED="$ROOT_NVME_BDF nvme0"
 
 X="/mnt/nvme_xfs"
-C="/tmp/cobalt"
+C="/tmp/arm_neoverse"
+
+# Dynamically determine the correct SPDK deployment directory for the cloud provider
+CPU_PART_HEX=$(grep -im1 "CPU part" /proc/cpuinfo | awk -F: '{print $2}' | tr -d " \t\n\r" | tr 'A-Z' 'a-z')
+case "$CPU_PART_HEX" in
+    "0xd49") SPDK_DIR="./spdk-azure" ;;
+    *) SPDK_DIR="./spdk-aws" ;;
+esac
 
 mkdir -p $C
 DISK_MN=$(cat /sys/block/$(basename $D)/device/model 2>/dev/null | xargs)
@@ -73,7 +80,7 @@ progress_bar() {
 (
 sudo wipefs -a $D > /dev/null 2>&1
 # 3. Safely run the SPDK setup, preserving the environment variable
-sudo -E ./spdk/scripts/setup.sh reset > /dev/null 2>&1
+sudo -E ${SPDK_DIR}/scripts/setup.sh reset > /dev/null 2>&1
 sleep 2
 ) &
 spinner $! "⚙️ Sanitizing Hardware..."
@@ -91,7 +98,7 @@ progress_bar $! "⚙️ Running Legacy Baseline (20s)..." 23
 
 (
 # Safely run the SPDK setup, preserving the environment variable
-HUGEMEM=2048 sudo -E ./spdk/scripts/setup.sh > /dev/null 2>&1
+HUGEMEM=2048 sudo -E ${SPDK_DIR}/scripts/setup.sh > /dev/null 2>&1
 sleep 3
 ) &
 spinner $! "⚙️ Allocating Hugepages & Binding NVMe..."
@@ -104,7 +111,7 @@ sleep 1
 tmux new-session -d -s d "bash -c \"cd \\\"$SCRIPT_DIR\\\" && sudo ./build/dataplane-emu -m $C -b -k 2>&1 | grep --line-buffered -v 'Ignoring invalid max threads' ; sleep 15\""
 
 # Pane 1: Worker (Right)
-tmux split-window -h -t d:0.0 "sleep 5 && cd \"$SCRIPT_DIR\" && ./cobalt_worker.sh; echo ''; echo '--- Demo Complete. Press any key to Exit ---'; read -n 1 -s; tmux kill-session -t d"
+tmux split-window -h -t d:0.0 "sleep 5 && cd \"$SCRIPT_DIR\" && ./arm_neoverse_worker.sh; echo ''; echo '--- Demo Complete. Press any key to Exit ---'; read -n 1 -s; tmux kill-session -t d"
 
 tmux set-option -g mouse on
 tmux attach-session -t d

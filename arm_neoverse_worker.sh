@@ -41,7 +41,7 @@ spinner $! "⏳ Waiting for Data Plane Engine to Initialize..."
 clear
 
 echo "🚀 STAGE 2: Benchmarking User-Space Bridge..."
-( sudo fio --name=fuse --filename=/tmp/cobalt/nvme_raw_0 --rw=randrw --bs=4k --size=100M --direct=1 --iodepth=32 --runtime=15 --group_reporting --output-format=json --output=fuse.json > /dev/null 2>&1 ) &
+( sudo fio --name=fuse --filename=/tmp/arm_neoverse/nvme_raw_0 --rw=randrw --bs=4k --size=100M --direct=1 --iodepth=32 --runtime=15 --group_reporting --output-format=json --output=fuse.json > /dev/null 2>&1 ) &
 progress_bar $! "🔥 Stress-Testing Silicon Data Plane Bridge (15s)..." 16
 sudo chmod 666 fuse.json x.json 2>/dev/null || true
 
@@ -68,7 +68,7 @@ clear
 # Dynamically determine the model name (handling differences on ARM vs x86 and Cloud vs Bare Metal)
 CPU_PART_HEX=$(grep -im1 "CPU part" /proc/cpuinfo | awk -F: '{print $2}' | tr -d " \t\n\r" | tr 'A-Z' 'a-z')
 case "$CPU_PART_HEX" in
-    "0xd49") CPU_DESC="Azure Cobalt 100 (Neoverse-N2)" ;;
+    "0xd49") CPU_DESC="Azure Arm Neoverse-N2" ;;
     "0xd40") CPU_DESC="AWS Graviton3 (Neoverse-V1)" ;;
     "0xd0c") CPU_DESC="AWS Graviton2 (Neoverse-N1)" ;;
     "0xd4f") CPU_DESC="AWS Graviton4 / NVIDIA Grace (Neoverse-V2)" ;;

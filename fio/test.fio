@@ -8,7 +8,7 @@ time_based=1
 ramp_time=2
 runtime=60
 
-[cobalt-nvme-stress]
+[arm-neoverse-nvme-stress]
 # 4K Random Mixed I/O to showcase Neoverse-N2 throughput
 bs=4k
 rw=randrw

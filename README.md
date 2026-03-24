@@ -95,19 +95,19 @@ The ultimate capstone of `dataplane-emu` is providing seamless, zero-modificatio
 * **Hardware-Assisted OS Services (RISC-V):** Emulating RISC-V hardware accelerators (inspired by the ChamelIoT framework) that transparently replace software-based OS kernel services (scheduling, IPC) at compile time, achieving drastic latency reduction for unmodified legacy software.
 
 ### Validation & Benchmarking: The "Executive Demo"
-To empirically prove the performance gains of our kernel-bypass architecture on Azure Cobalt 100, we utilize a custom-compiled `fio` benchmark targeting the SPDK engine. 
+To empirically prove the performance gains of our kernel-bypass architecture on Azure Cobalt 100 (Arm Neoverse), we utilize a custom-compiled `fio` benchmark targeting the SPDK engine. 
 
 By pushing a massive queue depth (`iodepth=256`) of small 4K random reads/writes through a single polling thread (`thread=1`), the benchmark demonstrates:
 1. **Zero-Copy DMA:** Complete evasion of the Linux VFS and block layer overhead.
 2. **Lock-Free Contention Resolution:** The ability of Neoverse-N2 Large System Extensions (LSE) atomics to sustain extreme queue contention without POSIX mutex degradation.
 3. **Compute Isolation:** Saturating the local NVMe drive using only a single physical core, leaving the remaining cluster topology entirely free for compute-heavy AI workloads.
 
-### Hardware Optimization: Azure Cobalt 100 & ARM64 (Neoverse V2)
+### Hardware Optimization: Azure Cobalt 100 & AWS Graviton4
 To achieve true zero-copy I/O and maximize throughput on modern cloud silicon, `dataplane-emu` is heavily optimized for the Azure Cobalt 100 and AWS Graviton4 architectures.
 
 *   **Large System Extensions (LSE):** We bypass traditional, heavily contended x86 locks by compiling with `-mcpu=neoverse-v2 -moutline-atomics`. This forces the binary to utilize hardware-accelerated LSE atomics for our submission and completion queues.
 *   **Strict Memory Semantics:** Because ARM64 uses a weakly ordered memory model, all lock-free SPDK ring buffers enforce strict `std::memory_order_acquire` and `std::memory_order_release` semantics to prevent microarchitectural hazards.
-*   **1:1 Physical Core Pinning (No SMT):** Cobalt 100 maps vCPUs directly to physical cores. We pin our DPDK-style polling threads directly to these cores (`--core-mask`), guaranteeing zero performance jitter from shared execution resources.
+*   **1:1 Physical Core Pinning (No SMT):** Arm Neoverse maps vCPUs directly to physical cores. We pin our DPDK-style polling threads directly to these cores (`--core-mask`), guaranteeing zero performance jitter from shared execution resources.
 *   **SVE2 & NEON Vectorization:** Bulk data transformations and checksums are auto-vectorized using the Scalable Vector Extension 2 (SVE2), massively outperforming legacy x86 instruction-level parallelism.
 
 ### Autonomous Execution Engine: Colab MCP Server Integration
@@ -131,9 +131,9 @@ To safely orchestrate autonomous C++ kernel generation without exposing the host
 📦 dataplane-emu/
 ├── ⚙️ CMakeLists.txt
 ├── 📖 README.md
-├── 🖥️ cobalt_worker.sh
+├── 🖥️ arm_neoverse_worker.sh
 ├── 📖 demo_architecture_walkthrough.md
-├── 🖥️ launch_cobalt_demo.sh
+├── 🖥️ launch_arm_neoverse_demo.sh
 ├── ⚙️ makefile
 ├── 📁 docs/
 │   ├── 📁 emulator/               # Low-level microarchitectural C++/Rust docs
@@ -222,14 +222,14 @@ In a second terminal, interact with the bridge:
 head -c 128 /mnt/virtual_nvme/nvme_raw_0 | hexdump -C
 ```
 
-### 4. Azure Cobalt 100 Silicon Data Plane Demo
+### 4. Arm Neoverse Silicon Data Plane Demo
 This benchmark quantifies the "20-microsecond tax" reduction on [Azure Cobalt 100](https://azure.microsoft.com/en-us/blog/microsoft-azure-delivers-purpose-built-chips-with-azure-cobalt-100-and-azure-maia-100/) silicon. It compares a legacy XFS baseline against the `dataplane-emu` user-space reactor.
 
 **Run the automated demo:**
 ```bash
-./launch_cobalt_demo.sh
+./launch_arm_neoverse_demo.sh
 ```
-#### Verified Performance Scorecard (Azure Cobalt 100)
+#### Verified Performance Scorecard (Arm Neoverse)
 ```consol
 ==========================================================================
               AZURE COBALT 100: SILICON DATA PLANE SCORECARD
@@ -249,22 +249,6 @@ Memory Model         | Strong/Syscall | FUSE/Copy      | Relaxed/Lock-Free
 ```
 
 ```consol
-=========================================================================
-  AWS Graviton3 (Neoverse-V1) | c7gd.xlarge | SILICON DATA PLANE SCORECARD
-==========================================================================
-Architecture              | Latency (us) | IOPS
---------------------------------------------------------------------------
-1. Legacy Kernel          | 714.20       | 1399
-2. User-Space Bridge      | 33.34        | 29257
-3. Zero-Copy (Bypass)     | 21.67        | 45348
-==========================================================================
-Metric               | Legacy Path    | Bridge Path    | Bypass Path
---------------------------------------------------------------------------
-Max CPU (Core 0)     | 0.6%           | 25.2%          | 100.0%
-Context Switches     | 27979          | 31971          | 2
-Memory Model         | Strong/Syscall | FUSE/Copy      | Relaxed/Lock-Free
-==========================================================================
-
 ==========================================================================
   AWS Graviton3 (Neoverse-V1) | c7gd.xlarge | SILICON DATA PLANE SCORECARD
   Target Drive: Amazon EC2 NVMe Instance Storage (Nitro SSD Controller)
@@ -286,7 +270,7 @@ Memory Model         | Strong/Syscall | FUSE/Copy      | Relaxed/Lock-Free
 
 > [!TIP]
 > **Can't Copy/Paste Text During the Demo?**
-> The `launch_cobalt_demo.sh` script executes the dashboard inside `tmux` with global mouse tracking enabled. This highlights panes securely but actively hijacks your terminal emulator's native text selection capability!
+> The `launch_arm_neoverse_demo.sh` script executes the dashboard inside `tmux` with global mouse tracking enabled. This highlights panes securely but actively hijacks your terminal emulator's native text selection capability!
 > 
 > **Workaround 1: Tmux Zoom (Recommended)**
 > Because `tmux` splits the screen, highlighting text linearly will bleed into the adjacent pane. To fix this, press **`Ctrl+B`**, release, and then press **`z`**. This zooms your current pane to full screen. You can then safely hold **`Shift`** and drag your mouse to copy the text without hitting the other pane. Press **`Ctrl+B`** then **`z`** again to un-zoom.

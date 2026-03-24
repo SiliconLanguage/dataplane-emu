@@ -6,12 +6,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 
 # --- Explicit Silicon-Specific Optimization Mapping ---
 # Set via command line: cmake -DTARGET_SILICON=GRAVITON3 ..
-set(TARGET_SILICON "GENERIC" CACHE STRING "Target Silicon (COBALT100, GRAVITON2, GRAVITON3, GRAVITON4, GENERIC)")
+set(TARGET_SILICON "GENERIC" CACHE STRING "Target Silicon (ARM_NEOVERSE_N2, GRAVITON2, GRAVITON3, GRAVITON4, GENERIC)")
 
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
-    if(TARGET_SILICON STREQUAL "COBALT100")
+    if(TARGET_SILICON STREQUAL "ARM_NEOVERSE_N2")
         set(ARCH_FLAGS "-mcpu=neoverse-n2")
-        message(STATUS "🚀 Target: Azure Cobalt 100 (Neoverse-N2)")
+        message(STATUS "🚀 Target: Azure Arm Neoverse-N2 (Neoverse-N2)")
         
     elseif(TARGET_SILICON STREQUAL "GRAVITON4")
         set(ARCH_FLAGS "-mcpu=neoverse-v2")
