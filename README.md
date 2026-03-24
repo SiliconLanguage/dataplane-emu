@@ -9,7 +9,7 @@
 [![C++](https://img.shields.io/badge/Language-C%2B%2B20-blue.svg)](https://isocpp.org/)
 [![Rust](https://img.shields.io/badge/Language-Rust-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-red.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-x86__64%20%7C%20ARM64%20%7C%20RISC--V-green.svg)](#-architecture-adaptation)
+[![Platform](https://img.shields.io/badge/Platform-x86__64%20%7C%20ARM64%20%7C%20RISC--V-green.svg)](#-core-architecture)
 
 ## 📖 The Vision
 
@@ -84,8 +84,8 @@ To accelerate unmodified legacy applications (e.g., PostgreSQL) without requirin
 
 ### Phase 6: Hardware Offloading & Zero-Copy I/O (Active Research)
 Moving beyond user-space POSIX interception, the final phase pushes storage computation directly to the hardware boundaries to support legacy databases and IO-intensive AI workloads:
-* **In-Kernel eBPF Offloading (XRP):** Implementing the eXpress Resubmission Path (XRP) by hooking an eBPF parser directly into the NVMe driver's completion interrupt handler [1, 2]. This completely bypasses the block, file system, and system call layers, allowing the NVMe interrupt handler to instantly construct and resubmit dependent storage requests (like B-Tree lookups) [1, 2], moving computation closer to the storage device [3].
-* **Transparent Zero-Copy I/O (zIO):** Eliminating memory copies between kernel-bypass networking (DPDK) and storage stacks (SPDK) [4]. Leveraging `userfaultfd` to intercept application memory access, this dynamically maps and resolves intermediate buffers to eliminate CPU copy overheads without requiring developers to rewrite their applications [5]. 
+* **In-Kernel eBPF Offloading (XRP):** Implementing the eXpress Resubmission Path (XRP) by hooking an eBPF parser directly into the NVMe driver's completion interrupt handler [1]. This completely bypasses the block, file system, and system call layers, allowing the NVMe interrupt handler to instantly construct and resubmit dependent storage requests (like B-Tree lookups), moving computation closer to the storage device [2].
+* **Transparent Zero-Copy I/O (zIO):** Eliminating memory copies between kernel-bypass networking (DPDK) and storage stacks (SPDK) [3]. Leveraging `userfaultfd` to intercept application memory access, this dynamically maps and resolves intermediate buffers to eliminate CPU copy overheads without requiring developers to rewrite their applications [4].
 
 ### Phase 7: Transparent Silicon Enablement of Legacy Software (Infrastructure Integration)
 The ultimate capstone of `dataplane-emu` is providing seamless, zero-modification acceleration for legacy applications (e.g., PostgreSQL, Redis, MongoDB) and legacy file systems. This phase integrates our kernel-bypass and hardware-offloading primitives into transparent infrastructure layers:
@@ -111,21 +111,23 @@ To achieve true zero-copy I/O and maximize throughput on modern cloud silicon, `
 *   **SVE2 & NEON Vectorization:** Bulk data transformations and checksums are auto-vectorized using the Scalable Vector Extension 2 (SVE2), massively outperforming legacy x86 instruction-level parallelism.
 
 ### Autonomous Execution Engine: Colab MCP Server Integration
-To overcome local hardware bottlenecks and secure the code execution environment, `dataplane-emu` agents leverage the open-source **Google Colab MCP Server** as their primary execution sandbox [1].
+To overcome local hardware bottlenecks and secure the code execution environment, `dataplane-emu` agents leverage the open-source **Google Colab MCP Server** as their primary execution sandbox [5].
 
-*   **Cloud-Native Prototyping:** Instead of running an autonomous agent's generated code directly on local hardware—which might not be ideal for security or performance—agents connect to Colab's cloud environment, utilizing it as a fast, secure sandbox with powerful compute capabilities [1].
-*   **Full Lifecycle Automation:** Our control plane agents can programmatically control the Colab notebook interface to automate the development lifecycle [2]. This includes creating `.ipynb` files, injecting markdown cells to explain methodology, writing and executing Python code in real time, and dynamically managing dependencies (e.g., `!pip install`) [4]. 
-*   **Lightweight Local Orchestration:** The local agentic framework relies on a minimal footprint, requiring only Python, `git`, and `uv` (the required Python package manager) to run the MCP tool servers and dispatch tasks to the cloud sandbox [3, 5].
+*   **Cloud-Native Prototyping:** Instead of running an autonomous agent's generated code directly on local hardware—which might not be ideal for security or performance—agents connect to Colab's cloud environment, utilizing it as a fast, secure sandbox with powerful compute capabilities [5].
+*   **Full Lifecycle Automation:** Our control plane agents can programmatically control the Colab notebook interface to automate the development lifecycle [6]. This includes creating `.ipynb` files, injecting markdown cells to explain methodology, writing and executing Python code in real time, and dynamically managing dependencies (e.g., `!pip install`) [5].
+*   **Lightweight Local Orchestration:** The local agentic framework relies on a minimal footprint, requiring only Python, `git`, and `uv` (the required Python package manager) to run the MCP tool servers and dispatch tasks to the cloud sandbox [7].
 
 ### Security Architecture: Zero-Trust Agentic Governance
 To safely orchestrate autonomous C++ kernel generation without exposing the host infrastructure to malicious prompt injection or unintended execution loops, `dataplane-emu` employs a defense-in-depth strategy combining hardware sandboxing with strict Model Context Protocol (MCP) governance.
 
-*   **Hardware-Accelerated Sandboxing (TEEs & DPUs):** Agent execution and code compilation are strictly isolated using Trusted Execution Environments (TEEs) and Data Processing Units (DPUs). By leveraging technologies like TEE-I/O and BlueField-3 DPUs, we enforce a hardware-level functional isolation layer [1-3]. This ensures that if an agent's sandbox is compromised, it cannot break out to access cross-tenant data or the host OS kernel [4].
-*   **Logical Bounding via MCP Gateways:** Hardware isolation alone does not prevent an agent with valid session tokens from executing unauthorized but technically "valid" commands. To solve this, all agent actions are routed through a governed MCP Gateway that enforces explicit operational contracts and permissions [5].
-*   **Tool Filtering & Virtual Keys:** The local control plane utilizes Virtual Keys to enforce strict, per-agent tool allow-lists [6, 7]. An agent is only granted access to the specific MCP tools required for its immediate task (e.g., code compilation), completely blocking unauthorized lateral movement.
-*   **Read-Only Defaults & Human-in-the-Loop:** All high-stakes infrastructure and system actions default to a read-only state [8]. True autonomy is bounded by strict policy-as-code evaluations, requiring explicit Human-in-the-Loop (HITL) approval and maintaining centralized "kill switches" to halt anomalous agent behavior instantly [9, 10].
+*   **Hardware-Accelerated Sandboxing (TEEs & DPUs):** Agent execution and code compilation are strictly isolated using Trusted Execution Environments (TEEs) and Data Processing Units (DPUs) [8]. By leveraging technologies like TEE-I/O and BlueField-3 DPUs, we enforce a hardware-level functional isolation layer [9]. This ensures that if an agent's sandbox is compromised, it cannot break out to access cross-tenant data or the host OS kernel.
+*   **Logical Bounding via MCP Gateways:** Hardware isolation alone does not prevent an agent with valid session tokens from executing unauthorized but technically "valid" commands. To solve this, all agent actions are routed through a governed MCP Gateway that enforces explicit operational contracts and permissions [10].
+*   **Tool Filtering & Virtual Keys:** The local control plane utilizes Virtual Keys to enforce strict, per-agent tool allow-lists [10]. An agent is only granted access to the specific MCP tools required for its immediate task (e.g., code compilation), completely blocking unauthorized lateral movement.
+*   **Read-Only Defaults & Human-in-the-Loop:** All high-stakes infrastructure and system actions default to a read-only state. True autonomy is bounded by strict policy-as-code evaluations, requiring explicit Human-in-the-Loop (HITL) approval and maintaining centralized "kill switches" to halt anomalous agent behavior instantly [10].
 
 ## 📦 Repository Structure
+
+Representative snapshot (trimmed for readability):
 
 ```text
 📦 dataplane-emu/
@@ -187,6 +189,7 @@ g++ -O3 -Wall -std=c++17 -pthread src/dataplane_ring.cpp -o build/dataplane_ring
 
 # Export AArch64 library paths for FUSE/SPDK
 export LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu:$LD_LIBRARY_PATH
+```
 
 ## Usage & Execution Modes
 
@@ -230,7 +233,7 @@ This benchmark quantifies the "20-microsecond tax" reduction on [Azure Cobalt 10
 ./launch_cobalt_demo.sh
 ```
 #### Verified Performance Scorecard (Azure Cobalt 100)
-```consol
+```console
 ==========================================================================
               AZURE COBALT 100: SILICON DATA PLANE SCORECARD
 ==========================================================================
@@ -257,3 +260,15 @@ A critical observation in our benchmark is that the **User-Space Bridge** massiv
 1. **The Success:** The massive drop in context switches proves the pure user-space `dataplane-emu` kernel-bypass loop successfully offloads the massive legacy Linux block-layer interrupts.
 2. **The Bottleneck:** Despite hitting ~47,000 IOPS, the data path is still fundamentally constrained by the **"FUSE Tax"**—the kernel-to-user memory copies actively required by the FUSE loopback architecture. These intermediate memory copies actively steal CPU polling cycles.
 3. **The Solution:** This definitively validates the final shift to **Phase 5 (LD_PRELOAD)**. By completely eliminating the FUSE memory copies via standard `glibc` interception, we instantly unlock the true **72,000+ IOPS** Zero-Copy hardware threshold.
+
+## References
+1. [XRP Project: eXpress Resubmission Path](https://github.com/xrp-project/XRP)
+2. [SPDK: Storage Performance Development Kit](https://github.com/spdk/spdk)
+3. [DPDK: Data Plane Development Kit](https://www.dpdk.org/)
+4. [zIO Paper (OSDI '22)](https://www.usenix.org/system/files/osdi22-stamler.pdf)
+5. [Model Context Protocol Servers (including Colab integrations)](https://github.com/modelcontextprotocol/servers)
+6. [Agent Architecture and MCP Workflow](docs/tensorplane/AGENT_ARCHITECTURE.md)
+7. [uv Python Package Manager](https://docs.astral.sh/uv/)
+8. [TEE-I/O Research and Background](https://www.microsoft.com/en-us/research/publication/tee-io-protecting-against-i-o-attacks-in-trusted-execution-environments/)
+9. [NVIDIA BlueField DPU Platform](https://www.nvidia.com/en-us/networking/products/data-processing-unit/)
+10. [Anthropic MCP Specification](https://modelcontextprotocol.io/)
