@@ -87,9 +87,9 @@ progress_bar() {
 spinner $! "⏳ Waiting for Data Plane Engine to Initialize..."
 clear
 
-echo "🚀 STAGE 2: Benchmarking User-Space Bridge..."
-( sudo fio --name=fuse --filename=/tmp/arm_neoverse/nvme_raw_0 --rw=randrw --bs=4k --size=100M --direct=1 --iodepth=32 --runtime=15 --group_reporting --output-format=json --output=fuse.json > /dev/null 2>&1 ) &
-progress_bar $! "🔥 Stress-Testing Silicon Data Plane Bridge (15s)..." 16
+echo "🚀 STAGE 2: Benchmarking User-Space Bridge at QD=128..."
+( sudo fio --name=fuse --filename=/tmp/arm_neoverse/nvme_raw_0 --rw=randrw --bs=4k --size=4G --direct=1 --iodepth=128 --runtime=30 --group_reporting --output-format=json --output=fuse.json > /dev/null 2>&1 ) &
+progress_bar $! "🔥 Stress-Testing Silicon Data Plane Bridge (30s)..." 31
 sudo chown "$USER":"$USER" fuse.json 2>/dev/null || true
 chmod 644 fuse.json 2>/dev/null || true
 

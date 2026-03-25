@@ -167,11 +167,11 @@ spinner $! "⚙️ Sanitizing Hardware..."
 sudo mount "$D" "$X" > /dev/null 2>&1 || (sudo mkfs.xfs -f "$D" > /dev/null 2>&1 && sudo mount "$D" "$X" > /dev/null 2>&1)
 
 sudo chown "$USER":"$USER" "$X"
-sudo fio --name=base --directory="$X" --rw=randrw --bs=4k --size=2G --direct=1 --iodepth=256 --runtime=20 --time_based --group_reporting --output-format=json --output=x.json > /dev/null 2>&1
+sudo fio --name=base --directory="$X" --rw=randrw --bs=4k --size=4G --direct=1 --iodepth=128 --runtime=30 --time_based --group_reporting --output-format=json --output=x.json > /dev/null 2>&1
 sudo umount -l "$X" > /dev/null 2>&1
 sleep 2
 ) &
-progress_bar $! "⚙️ Running Legacy Baseline (20s)..." 23
+progress_bar $! "⚙️ Running Legacy Baseline (30s)..." 33
 
 (
 # Safely run the SPDK setup, preserving the environment variable
