@@ -33,62 +33,39 @@ namespace dataplane_intercept {
 static constexpr uint32_t LOG_NTH = 1500;
 
 // =========================================================================
-// §5  Engine Polling Thread
+// §5  Per-Thread SqCqEmulator Pool
 // =========================================================================
 
-void EngineContext::poll_loop() noexcept {
-    while (running.load(std::memory_order_relaxed)) {
-        bool did_work = false;
-        const size_t n = ring_count.load(std::memory_order_acquire);
-        for (size_t i = 0; i < n; ++i) {
-            IorRing* ring = rings[i].load(std::memory_order_acquire);
-            if (!ring) continue;
+dataplane_emu::SqCqEmulator* EmulatorPool::allocate() noexcept {
+    size_t idx = count.fetch_add(1, std::memory_order_acq_rel);
+    if (idx >= MAX_EMULATORS) {
+        count.fetch_sub(1, std::memory_order_relaxed);
+        return nullptr;
+    }
+    // SqCqEmulator::is_running defaults to true; launch its device loop.
+    device_threads[idx] = std::thread([this, idx] {
+        emulators[idx].nvme_device_loop();
+    });
+    return &emulators[idx];
+}
 
-            IorEntry* entry = ring->poll();
-            if (!entry) continue;
-            did_work = true;
-
-            // Mock engine: replicate FUSE bridge behaviour.
-            switch (entry->opcode) {
-            case IorEntry::Op::READ:
-                // Fill caller buffer with pattern data (same as FUSE memset 'A').
-                std::memset(entry->user_buf, 'A', entry->length);
-                entry->result = static_cast<ssize_t>(entry->length);
-                break;
-            case IorEntry::Op::WRITE:
-                // Accept write (no-op sink, same as FUSE).
-                entry->result = static_cast<ssize_t>(entry->length);
-                break;
-            case IorEntry::Op::FSYNC:
-                entry->result = 0;
-                break;
-            }
-
-            // Signal completion — release ensures result is visible.
-            entry->ready.store(true, std::memory_order_release);
-        }
-
-        if (!did_work) {
-            // Friendly yield — avoid burning a core when idle.
-#if defined(__aarch64__)
-            __asm__ volatile("yield" ::: "memory");
-#else
-            __builtin_ia32_pause();
-#endif
-        }
+void EmulatorPool::shutdown_all() noexcept {
+    size_t n = count.load(std::memory_order_acquire);
+    for (size_t i = 0; i < n; ++i)
+        emulators[i].shutdown();
+    for (size_t i = 0; i < n; ++i) {
+        if (device_threads[i].joinable())
+            device_threads[i].join();
     }
 }
 
-/// Thread-local SPSC ring + lazy registration.
-static thread_local IorRing tl_ring{};
-static thread_local bool    tl_ring_registered = false;
+/// Thread-local emulator pointer + lazy allocation.
+static thread_local dataplane_emu::SqCqEmulator* tl_emulator = nullptr;
 
-IorRing* dp_get_thread_ring() noexcept {
-    if (!tl_ring_registered) {
-        g_engine.register_ring(&tl_ring);
-        tl_ring_registered = true;
-    }
-    return &tl_ring;
+dataplane_emu::SqCqEmulator* dp_get_thread_emulator() noexcept {
+    if (!tl_emulator)
+        tl_emulator = g_emulator_pool.allocate();
+    return tl_emulator;
 }
 
 // =========================================================================
@@ -104,19 +81,17 @@ void dp_init_trampolines() noexcept {
     g_trampoline.real_pwrite   = reinterpret_cast<pwrite_fn_t>(dlsym(RTLD_NEXT, "pwrite"));
     g_trampoline.real_read     = reinterpret_cast<read_fn_t>(dlsym(RTLD_NEXT, "read"));
     g_trampoline.real_write    = reinterpret_cast<write_fn_t>(dlsym(RTLD_NEXT, "write"));
+    g_trampoline.real_fstat    = reinterpret_cast<fstat_fn_t>(dlsym(RTLD_NEXT, "fstat64"));
+    g_trampoline.real_lseek    = reinterpret_cast<lseek_fn_t>(dlsym(RTLD_NEXT, "lseek64"));
+    g_trampoline.real_ftruncate = reinterpret_cast<ftruncate_fn_t>(dlsym(RTLD_NEXT, "ftruncate64"));
     g_trampoline.real_memcpy   = reinterpret_cast<memcpy_fn_t>(dlsym(RTLD_NEXT, "memcpy"));
     g_trampoline.real_memmove  = reinterpret_cast<memmove_fn_t>(dlsym(RTLD_NEXT, "memmove"));
-
-    // Start the engine polling thread.
-    g_engine.running.store(true, std::memory_order_release);
-    g_engine_thread = std::thread([] { g_engine.poll_loop(); });
+    // Emulator threads are started lazily per-thread via dp_get_thread_emulator().
 }
 
 void dp_fini() noexcept {
-    // Stop engine thread.
-    g_engine.running.store(false, std::memory_order_release);
-    if (g_engine_thread.joinable())
-        g_engine_thread.join();
+    // Shutdown all per-thread SqCqEmulator device threads.
+    g_emulator_pool.shutdown_all();
 
     // Release remaining fake FDs.
     for (size_t i = 0; i < FAKE_FD_COUNT; ++i) {
@@ -274,42 +249,25 @@ int ElisionTracker::handle_fault(void* fault_addr) noexcept {
 }
 
 // =========================================================================
-// Helper: submit an IorEntry and spin-wait for completion
+// Helper: submit via SqCqEmulator and spin-wait for CQ completion
 // =========================================================================
 
-static ssize_t dp_submit_and_wait(IorEntry::Op op, int fake_fd,
-                                  void* buf, size_t len, off_t offset) noexcept {
-    IorRing* ring = dp_get_thread_ring();
+static ssize_t dp_submit_sqcq(bool is_read, void* buf,
+                               size_t len, off_t offset) noexcept {
+    auto* emu = dp_get_thread_emulator();
+    if (!emu) { errno = EAGAIN; return -1; }
 
-    // Stack-allocated entry — no heap on the hot path.
-    IorEntry entry{};
-    entry.opcode   = op;
-    entry.fake_fd  = fake_fd;
-    entry.offset   = static_cast<uint64_t>(offset);
-    entry.length   = static_cast<uint32_t>(len);
-    entry.user_buf = buf;
-    entry.ready.store(false, std::memory_order_relaxed);
-    entry.result   = 0;
+    // Translate POSIX offset/length to NVMe-style LBA.
+    uint64_t lba = static_cast<uint64_t>(offset) / 4096;
 
-    // Submit to the per-thread ring. Spin-retry if full.
-    while (!ring->submit(&entry)) {
-#if defined(__aarch64__)
-        __asm__ volatile("yield" ::: "memory");
-#else
-        __builtin_ia32_pause();
-#endif
-    }
+    // Submit SQEntry → device thread processes → poll CQ with acquire.
+    emu->host_submit_and_poll(lba);
 
-    // Spin-wait for the engine to complete the entry.
-    while (!entry.ready.load(std::memory_order_acquire)) {
-#if defined(__aarch64__)
-        __asm__ volatile("yield" ::: "memory");
-#else
-        __builtin_ia32_pause();
-#endif
-    }
+    // Mock data fill post-completion (simulates DMA into user buffer).
+    if (is_read)
+        std::memset(buf, 'A', len);
 
-    return entry.result;
+    return static_cast<ssize_t>(len);
 }
 
 } // namespace dataplane_intercept
@@ -379,13 +337,12 @@ ssize_t pread(int fd, void* buf, size_t count, off_t offset) {
     // Sampled telemetry (matches FUSE STDOUT_LOG_NTH cadence).
     static thread_local uint32_t log_ctr = 0;
     if (__builtin_expect(++log_ctr >= LOG_NTH, 0)) {
-        std::fprintf(stderr, "[LD_PRELOAD -> IorRing] READ  fd:%d | size:%zu | offset:%lld\n",
+        std::fprintf(stderr, "[LD_PRELOAD -> SqCq] READ  fd:%d | size:%zu | offset:%lld\n",
                      fd, count, static_cast<long long>(offset));
         log_ctr = 0;
     }
 
-    return dp_submit_and_wait(IorEntry::Op::READ, fd,
-                              buf, count, offset);
+    return dp_submit_sqcq(/*is_read=*/true, buf, count, offset);
 }
 
 ssize_t pwrite(int fd, const void* buf, size_t count, off_t offset) {
@@ -400,13 +357,13 @@ ssize_t pwrite(int fd, const void* buf, size_t count, off_t offset) {
 
     static thread_local uint32_t log_ctr = 0;
     if (__builtin_expect(++log_ctr >= LOG_NTH, 0)) {
-        std::fprintf(stderr, "[LD_PRELOAD -> IorRing] WRITE fd:%d | size:%zu | offset:%lld\n",
+        std::fprintf(stderr, "[LD_PRELOAD -> SqCq] WRITE fd:%d | size:%zu | offset:%lld\n",
                      fd, count, static_cast<long long>(offset));
         log_ctr = 0;
     }
 
-    return dp_submit_and_wait(IorEntry::Op::WRITE, fd,
-                              const_cast<void*>(buf), count, offset);
+    return dp_submit_sqcq(/*is_read=*/false,
+                          const_cast<void*>(buf), count, offset);
 }
 
 ssize_t read(int fd, void* buf, size_t count) {
@@ -431,6 +388,106 @@ ssize_t write(int fd, const void* buf, size_t count) {
     if (n > 0)
         e->file_pos.fetch_add(n, std::memory_order_relaxed);
     return n;
+}
+
+// 64-bit aliases for pread/pwrite.
+ssize_t pread64(int fd, void* buf, size_t count, off_t offset) {
+    return pread(fd, buf, count, offset);
+}
+
+ssize_t pwrite64(int fd, const void* buf, size_t count, off_t offset) {
+    return pwrite(fd, buf, count, offset);
+}
+
+int __fxstat64(int ver, int fd, struct stat64 *buf) {
+    (void)ver;
+    FakeFdEntry* e = g_fd_table.lookup(fd);
+    if (!e) {
+        // Fall through to real __fxstat64.
+        using fxstat64_fn_t = int (*)(int, int, struct stat64*);
+        static auto real_fxstat64 = reinterpret_cast<fxstat64_fn_t>(dlsym(RTLD_NEXT, "__fxstat64"));
+        if (real_fxstat64) return real_fxstat64(ver, fd, buf);
+        errno = ENOSYS;
+        return -1;
+    }
+
+    // Synthesize a stat result for the mock file.
+    std::memset(buf, 0, sizeof(*buf));
+    buf->st_mode  = S_IFREG | 0666;
+    buf->st_nlink = 1;
+    buf->st_size  = static_cast<off_t>(e->file_size);
+    buf->st_blksize = 4096;
+    buf->st_blocks  = static_cast<blkcnt_t>(e->file_size / 512);
+    return 0;
+}
+
+// Both *64 and non-64 variants are exported so LD_PRELOAD intercepts
+// binaries compiled with or without _FILE_OFFSET_BITS=64.
+
+int fstat64(int fd, struct stat64 *buf) {
+    return __fxstat64(0, fd, buf);
+}
+
+int fstat(int fd, struct stat *buf) {
+    return __fxstat64(0, fd, reinterpret_cast<struct stat64*>(buf));
+}
+
+off_t lseek64(int fd, off_t offset, int whence) {
+    FakeFdEntry* e = g_fd_table.lookup(fd);
+    if (!e)
+        return g_trampoline.real_lseek(fd, offset, whence);
+
+    off_t new_pos;
+    switch (whence) {
+    case SEEK_SET: new_pos = offset; break;
+    case SEEK_CUR: new_pos = e->file_pos.load(std::memory_order_relaxed) + offset; break;
+    case SEEK_END: new_pos = static_cast<off_t>(e->file_size) + offset; break;
+    default: errno = EINVAL; return -1;
+    }
+    if (new_pos < 0) { errno = EINVAL; return -1; }
+    e->file_pos.store(new_pos, std::memory_order_relaxed);
+    return new_pos;
+}
+
+off_t lseek(int fd, off_t offset, int whence) {
+    return lseek64(fd, offset, whence);
+}
+
+int ftruncate64(int fd, off_t length) {
+    FakeFdEntry* e = g_fd_table.lookup(fd);
+    if (!e)
+        return g_trampoline.real_ftruncate(fd, length);
+    // No-op for mock — file size stays fixed.
+    return 0;
+}
+
+int ftruncate(int fd, off_t length) {
+    return ftruncate64(fd, length);
+}
+
+int fallocate64(int fd, int mode, off_t offset, off_t len) {
+    (void)mode; (void)offset; (void)len;
+    if (g_fd_table.lookup(fd))
+        return 0;  // no-op for mock
+    // Fall through to glibc for real FDs.
+    errno = ENOSYS;
+    return -1;
+}
+
+int fallocate(int fd, int mode, off_t offset, off_t len) {
+    return fallocate64(fd, mode, offset, len);
+}
+
+// open64 alias for binaries compiled with _FILE_OFFSET_BITS=64.
+int open64(const char* path, int flags, ...) {
+    mode_t mode = 0;
+    if (flags & O_CREAT) {
+        va_list ap;
+        va_start(ap, flags);
+        mode = static_cast<mode_t>(va_arg(ap, int));
+        va_end(ap);
+    }
+    return open(path, flags, mode);
 }
 
 } // extern "C"

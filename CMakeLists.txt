@@ -70,9 +70,9 @@ add_executable(dataplane-ring-test src/dataplane_ring.cpp)
 target_link_libraries(dataplane-ring-test PRIVATE project_options pthread)
 
 # --- Target: LD_PRELOAD Interception Library ---
-add_library(dataplane-intercept SHARED src/intercept.cpp)
+add_library(dataplane-intercept SHARED src/intercept.cpp src/sq_cq.cpp)
 target_include_directories(dataplane-intercept PRIVATE include)
-target_compile_definitions(dataplane-intercept PRIVATE _GNU_SOURCE _FILE_OFFSET_BITS=64)
+target_compile_definitions(dataplane-intercept PRIVATE _GNU_SOURCE)
 target_compile_options(dataplane-intercept PRIVATE -O3 ${CPU_FLAGS} -fPIC)
 target_link_libraries(dataplane-intercept PRIVATE dl pthread)
 set_target_properties(dataplane-intercept PROPERTIES

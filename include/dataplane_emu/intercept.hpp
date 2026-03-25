@@ -15,10 +15,14 @@
 #include <atomic>
 #include <array>
 #include <new>
+#include <thread>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <sys/ioctl.h>
 #include <linux/userfaultfd.h>
 #include <unistd.h>
+
+#include "sq_cq.hpp"
 
 namespace dataplane_intercept {
 
@@ -37,11 +41,6 @@ inline constexpr size_t FAKE_FD_COUNT = FAKE_FD_MAX - FAKE_FD_BASE;
 inline constexpr size_t COPY_ELIDE_MIN_BYTES   = 16 * 1024;   // 16 KB floor
 inline constexpr double COPY_ELIDE_BAILOUT_RATIO = 0.06;       // 6 %
 
-// Ring sizing — must be power-of-two.
-inline constexpr size_t IO_RING_SIZE = 1024;
-static_assert((IO_RING_SIZE & (IO_RING_SIZE - 1)) == 0,
-              "IO_RING_SIZE must be power of two");
-
 // =========================================================================
 // §1  LD_PRELOAD Trampoline Table
 // =========================================================================
@@ -58,6 +57,9 @@ using pread_fn_t    = ssize_t  (*)(int, void*, size_t, off_t);
 using pwrite_fn_t   = ssize_t  (*)(int, const void*, size_t, off_t);
 using read_fn_t     = ssize_t  (*)(int, void*, size_t);
 using write_fn_t    = ssize_t  (*)(int, const void*, size_t);
+using fstat_fn_t    = int      (*)(int, struct stat64*);
+using lseek_fn_t    = off_t    (*)(int, off_t, int);
+using ftruncate_fn_t = int     (*)(int, off_t);
 using memcpy_fn_t   = void*    (*)(void*, const void*, size_t);
 using memmove_fn_t  = void*    (*)(void*, const void*, size_t);
 
@@ -70,6 +72,9 @@ struct TrampolineTable {
     pwrite_fn_t   real_pwrite   = nullptr;
     read_fn_t     real_read     = nullptr;
     write_fn_t    real_write    = nullptr;
+    fstat_fn_t    real_fstat    = nullptr;
+    lseek_fn_t    real_lseek    = nullptr;
+    ftruncate_fn_t real_ftruncate = nullptr;
     memcpy_fn_t   real_memcpy   = nullptr;
     memmove_fn_t  real_memmove  = nullptr;
 };
@@ -125,60 +130,7 @@ struct FakeFdTable {
 /// Global FD table (process-wide, thread-safe via per-slot atomics).
 inline FakeFdTable g_fd_table{};
 
-// =========================================================================
-// §3  I/O Ring Submission Descriptor (Ior — DeepSeek 3FS bridge)
-// =========================================================================
-//
-// Translates synchronous POSIX calls into asynchronous ring submissions.
-// Each intercepted pread/pwrite produces one IorEntry, submitted to a
-// per-thread SPSC ring.  The engine thread polls and completes them.
-
-struct IorEntry {
-    enum class Op : uint8_t { READ = 0, WRITE = 1, FSYNC = 2 };
-
-    Op       opcode;
-    uint8_t  _reserved[3];
-    int      fake_fd;          // identifies the FakeFdEntry
-    uint64_t offset;           // file offset
-    uint32_t length;           // bytes
-    void*    user_buf;         // caller-supplied buffer (zero-copy target)
-
-    // Completion signal: the engine stores the result here and sets ready.
-    alignas(CACHE_LINE) std::atomic<bool> ready{false};
-    ssize_t  result;           // bytes transferred, or -errno
-};
-static_assert(alignof(IorEntry) >= CACHE_LINE,
-              "IorEntry completion flag must sit on its own cache line");
-
-/// Lock-free SPSC ring for IorEntry pointers.
-/// Producer: intercepted application thread.
-/// Consumer: dataplane engine polling thread.
-struct alignas(CACHE_LINE) IorRing {
-    std::array<IorEntry*, IO_RING_SIZE> buf{};
-    alignas(CACHE_LINE) std::atomic<size_t> head{0};   // producer writes
-    alignas(CACHE_LINE) std::atomic<size_t> tail{0};   // consumer reads
-
-    /// Submit an entry (producer side). Returns false if ring is full.
-    bool submit(IorEntry* entry) noexcept {
-        const size_t h = head.load(std::memory_order_relaxed);
-        const size_t next = (h + 1) & (IO_RING_SIZE - 1);
-        if (next == tail.load(std::memory_order_acquire))
-            return false;   // ring full
-        buf[h] = entry;
-        head.store(next, std::memory_order_release);
-        return true;
-    }
-
-    /// Dequeue one entry (consumer side). Returns nullptr if ring is empty.
-    IorEntry* poll() noexcept {
-        const size_t t = tail.load(std::memory_order_relaxed);
-        if (t == head.load(std::memory_order_acquire))
-            return nullptr; // ring empty
-        IorEntry* e = buf[t];
-        tail.store((t + 1) & (IO_RING_SIZE - 1), std::memory_order_release);
-        return e;
-    }
-};
+// §3 and §5 replaced by SqCqEmulator bridge — see EmulatorPool below §4.
 
 // =========================================================================
 // §4  Copy-Elision Tracker  (zIO pattern — userfaultfd)
@@ -250,41 +202,33 @@ struct ElisionTracker {
 };
 
 // =========================================================================
-// §5  Engine Polling Thread & Per-Thread Ring Registry
+// §5  Per-Thread SqCqEmulator Pool  (Phase 2 — direct NVMe queue bridge)
 // =========================================================================
 //
-// Each application thread that calls pread/pwrite gets a thread_local IorRing.
-// Rings are registered with the global engine context so the polling thread
-// can drain them.  The engine completes requests with mock data (memset 'A'
-// for reads, no-op for writes) — matching the FUSE bridge contract.
+// Each application thread that calls pread/pwrite gets a dedicated
+// SqCqEmulator (SPSC queue pair) plus a device-emulation thread.
+// pread/pwrite translate to SQEntry submissions via host_submit_and_poll(),
+// exercising the full acquire/release handshake path.
 
-inline constexpr size_t MAX_RINGS = 128;
+inline constexpr size_t MAX_EMULATORS = 128;
 
-struct EngineContext {
-    std::array<std::atomic<IorRing*>, MAX_RINGS> rings{};
-    std::atomic<size_t> ring_count{0};
-    std::atomic<bool>   running{false};
+struct EmulatorPool {
+    std::array<dataplane_emu::SqCqEmulator, MAX_EMULATORS> emulators{};
+    std::array<std::thread, MAX_EMULATORS> device_threads{};
+    std::atomic<size_t> count{0};
 
-    /// Register a per-thread ring.  Returns slot index or -1 on overflow.
-    int register_ring(IorRing* ring) noexcept {
-        size_t idx = ring_count.fetch_add(1, std::memory_order_acq_rel);
-        if (idx >= MAX_RINGS) {
-            ring_count.fetch_sub(1, std::memory_order_relaxed);
-            return -1;
-        }
-        rings[idx].store(ring, std::memory_order_release);
-        return static_cast<int>(idx);
-    }
+    /// Allocate a fresh SqCqEmulator + start its device thread.
+    dataplane_emu::SqCqEmulator* allocate() noexcept;
 
-    /// Engine polling loop — runs in a dedicated thread.
-    void poll_loop() noexcept;
+    /// Shutdown all emulators and join device threads.
+    void shutdown_all() noexcept;
 };
 
-/// Global engine context — started at library init.
-inline EngineContext g_engine{};
+/// Global emulator pool — started/stopped by library lifecycle.
+inline EmulatorPool g_emulator_pool{};
 
-/// Get (or create) the calling thread's IorRing.
-IorRing* dp_get_thread_ring() noexcept;
+/// Get (or lazily allocate) the calling thread's SqCqEmulator.
+dataplane_emu::SqCqEmulator* dp_get_thread_emulator() noexcept;
 
 // =========================================================================
 // §6  Library Lifecycle
