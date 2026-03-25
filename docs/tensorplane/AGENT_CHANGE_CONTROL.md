@@ -33,6 +33,15 @@ The policy applies to all customization artifacts that affect autonomous behavio
 5. Obtain reviewer approvals (see Reviewer Gate below).
 6. Merge only after all gates are green.
 
+## Private-to-Local Sync Workflow
+
+To keep private agent definitions available in local development without committing them to this public repository:
+
+1. Store private agent files in a private repository path such as `personal/agents/*.agent.md`.
+2. Sync into local workspace using `bash scripts/agents/sync-private-agents.sh`.
+3. Prevent accidental public tracking by adding those files to local excludes (`.git/info/exclude`).
+4. Promote to public `main` only through the PR-based flow defined above.
+
 ## Branching Rules
 
 - Direct commits to `main` are not allowed for scoped files in this policy.

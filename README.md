@@ -29,6 +29,12 @@ High-level architectural documentation detailing our approach to AI training bot
 * **[Agentic Architecture & MCP](docs/tensorplane/AGENT_ARCHITECTURE.md)**: How we use the Model Context Protocol and a Mixture-of-Experts (MoE) to achieve recursive self-improvement and autonomous kernel optimization.
 * **[Agent Customization Change Control](docs/tensorplane/AGENT_CHANGE_CONTROL.md)**: The required update-review-approval flow for agent, prompt, instruction, and hook changes before merge to `main`.
 
+### 🔐 Private Agent Sync (Local Workspace)
+Private agent definitions can remain in a private repository and still be loaded locally in this workspace:
+* Clone your private customization repository (default expected path: `$HOME/copilot-customizations`).
+* Run `bash scripts/agents/sync-private-agents.sh` to copy `personal/agents/*.agent.md` into `.github/agents/` locally.
+* Keep those private files out of public tracking by using local excludes (`.git/info/exclude`) or by keeping them only in the private repo.
+
 ### ⚙️ dataplane-emu (The Engine)
 Low-level microarchitectural documentation detailing the C++/Rust kernel-bypass implementation.
 * **[POSIX Interception Bridge](docs/emulator/posix_intercept.md)**: `LD_PRELOAD` trampolines, Fake FDs, and transparent legacy application support.
