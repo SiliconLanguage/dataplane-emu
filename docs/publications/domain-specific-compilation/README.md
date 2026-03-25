@@ -192,8 +192,7 @@
     11. [P4 Language Support in DPL - NVIDIA Docs](https://docs.nvidia.com/doca/archive/2-10-0/P4-Language-Support-in-DPL/index.html)
     12. [Towards Accelerating the Network Performance on DPUs by optimising the P4 runtime - Aalborg Universitets forskningsportal](https://vbn.aau.dk/ws/portalfiles/portal/697664030/Towards_Accelerating_the_Network_Performance_on_DPUs_by_optimising_the_P4_runtime.pdf)
     13. [hXDP: Efficient Software Packet Processing on FPGA ... - eunomia-bpf](https://eunomia.dev/others/papers/osdi20-brunella/)
-    14. [An FPGA-based VLIW processor with custom hardware execution - ResearchGat
-    e](https://www.researchgate.net/publication/221224499_An_FPGA-based_VLIW_processor_with_custom_hardware_execution)
+    14. [An FPGA-based VLIW processor with custom hardware execution - ResearchGate](https://www.researchgate.net/publication/221224499_An_FPGA-based_VLIW_processor_with_custom_hardware_execution)
     15. [eHDL: Turning eBPF/XDP Programs into Hardware Designs for the ...](https://pontarelli.di.uniroma1.it/publication/asplos23/asplos23.pdf)
     16. [The Case for Ultra High Speed Portable Network Security Filters](https://ceur-ws.org/Vol-3731/paper11.pdf)
     17. [SmartNIC Computing Capabilities - Emergent Mind](https://www.emergentmind.com/topics/smartnic-computing-capabilities)
@@ -208,4 +207,3 @@
     ---
     
     *Copyright (c) 2026 SiliconLanguage Foundry. All rights reserved.*
-    
