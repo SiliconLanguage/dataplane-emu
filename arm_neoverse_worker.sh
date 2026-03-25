@@ -1,5 +1,52 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
+
 cd "$(dirname "$0")"
+
+require_cmd() {
+    local cmd="$1"
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        echo "Missing required command: $cmd"
+        exit 1
+    fi
+}
+
+require_cmd jq
+require_cmd fio
+require_cmd bc
+require_cmd awk
+require_cmd grep
+require_cmd pgrep
+
+fetch_imds() {
+    local mode="$1"
+    python3 - "$mode" <<'PY' 2>/dev/null || true
+import json
+import sys
+import urllib.request
+
+mode = sys.argv[1]
+
+def get(url, headers=None):
+    req = urllib.request.Request(url, headers=headers or {})
+    with urllib.request.urlopen(req, timeout=1) as r:
+        return r.read().decode().strip()
+
+if mode == "azure":
+    try:
+        print(get(
+            "http://169.254.169.254/metadata/instance/compute/vmSize?api-version=2021-02-01&format=text",
+            {"Metadata": "true"}
+        ))
+    except Exception:
+        pass
+elif mode == "aws":
+    try:
+        print(get("http://169.254.169.254/latest/meta-data/instance-type"))
+    except Exception:
+        pass
+PY
+}
 
 spinner() {
     local pid=$1
@@ -43,7 +90,18 @@ clear
 echo "🚀 STAGE 2: Benchmarking User-Space Bridge..."
 ( sudo fio --name=fuse --filename=/tmp/arm_neoverse/nvme_raw_0 --rw=randrw --bs=4k --size=100M --direct=1 --iodepth=32 --runtime=15 --group_reporting --output-format=json --output=fuse.json > /dev/null 2>&1 ) &
 progress_bar $! "🔥 Stress-Testing Silicon Data Plane Bridge (15s)..." 16
-sudo chmod 666 fuse.json x.json 2>/dev/null || true
+sudo chown "$USER":"$USER" fuse.json 2>/dev/null || true
+chmod 644 fuse.json 2>/dev/null || true
+
+if [ ! -s x.json ]; then
+    echo "Expected baseline results file x.json was not found or is empty."
+    exit 1
+fi
+
+if [ ! -s fuse.json ]; then
+    echo "Expected bridge results file fuse.json was not found or is empty."
+    exit 1
+fi
 
 # Parse FIO JSON
 # Strip non-JSON FIO warnings from the output using sed
@@ -61,19 +119,45 @@ FC=$(echo "$JF" | jq -r '(.jobs[0].usr_cpu//0)+(.jobs[0].sys_cpu//0)' | awk '{v=
 FS=$(echo "$JF" | jq -r '(.jobs[0].ctx//0)' | awk '{v=$1} END {print v+0}')
 
 PL=$(echo "scale=2; $FL * 0.65" | bc); PI=$(echo "$FI * 1.55" | bc | awk '{printf "%.0f", $0}')
-E=$(pgrep dataplane-emu | head -n 1)
-CC=$(grep -i "ctxt" /proc/$E/status | awk '{s+=$2} END {print s}')
+E=$(pgrep -x dataplane-emu | head -n 1 || true)
+if [ -n "$E" ] && [ -r "/proc/$E/status" ]; then
+    CC=$(grep -i "ctxt" "/proc/$E/status" | awk '{s+=$2} END {print s+0}')
+else
+    CC="N/A"
+fi
 
 clear
-# Dynamically determine the model name (handling differences on ARM vs x86 and Cloud vs Bare Metal)
+# Determine cloud provider via local DMI data to avoid stale/cached metadata and network dependencies.
+CLOUD_PROVIDER="Unknown"
+SYS_VENDOR=$(cat /sys/devices/virtual/dmi/id/sys_vendor 2>/dev/null || true)
+PRODUCT_NAME=$(cat /sys/devices/virtual/dmi/id/product_name 2>/dev/null || true)
+if echo "$SYS_VENDOR $PRODUCT_NAME" | grep -Eqi 'microsoft|azure|virtual machine'; then
+    CLOUD_PROVIDER="Azure"
+elif echo "$SYS_VENDOR $PRODUCT_NAME" | grep -Eqi 'amazon|ec2'; then
+    CLOUD_PROVIDER="AWS"
+fi
+
+# CPU architecture description should be vendor-neutral unless cloud is confidently known.
 CPU_PART_HEX=$(grep -im1 "CPU part" /proc/cpuinfo | awk -F: '{print $2}' | tr -d " \t\n\r" | tr 'A-Z' 'a-z')
 case "$CPU_PART_HEX" in
-    "0xd49") CPU_DESC="Azure Arm Neoverse-N2" ;;
-    "0xd40") CPU_DESC="AWS Graviton3 (Neoverse-V1)" ;;
-    "0xd0c") CPU_DESC="AWS Graviton2 (Neoverse-N1)" ;;
-    "0xd4f") CPU_DESC="AWS Graviton4 / NVIDIA Grace (Neoverse-V2)" ;;
-    *) CPU_DESC="" ;;
+    "0xd49") CPU_ARCH="Neoverse-N2" ;;
+    "0xd40") CPU_ARCH="Neoverse-V1" ;;
+    "0xd0c") CPU_ARCH="Neoverse-N1" ;;
+    "0xd4f") CPU_ARCH="Neoverse-V2" ;;
+    *) CPU_ARCH="Unknown-Arm-Core" ;;
 esac
+
+CPU_DESC="$CPU_ARCH"
+if [ "$CLOUD_PROVIDER" = "AWS" ]; then
+    case "$CPU_PART_HEX" in
+        "0xd40") CPU_DESC="AWS Graviton3 ($CPU_ARCH)" ;;
+        "0xd0c") CPU_DESC="AWS Graviton2 ($CPU_ARCH)" ;;
+        "0xd4f") CPU_DESC="AWS Graviton4 ($CPU_ARCH)" ;;
+        *) CPU_DESC="AWS Arm ($CPU_ARCH)" ;;
+    esac
+elif [ "$CLOUD_PROVIDER" = "Azure" ]; then
+    CPU_DESC="Azure Arm ($CPU_ARCH)"
+fi
 
 MODEL_NAME=$(lscpu | grep -i "Model name" | cut -d':' -f2 | awk '{$1=$1};1')
 if [ -z "$MODEL_NAME" ]; then
@@ -83,16 +167,31 @@ if [ -z "$MODEL_NAME" ]; then
     MODEL_NAME=$(uname -m)
 fi
 
+# Prefer explicit demo override, then IMDS-reported SKU, then local fallback.
+if [ -n "${DEMO_INSTANCE_TYPE:-}" ]; then
+    MODEL_NAME="$DEMO_INSTANCE_TYPE"
+elif [ "$CLOUD_PROVIDER" = "Azure" ]; then
+    AZ_SIZE=$(fetch_imds azure)
+    if [ -n "$AZ_SIZE" ]; then
+        MODEL_NAME="$AZ_SIZE"
+    elif [ -n "$PRODUCT_NAME" ]; then
+        MODEL_NAME="$PRODUCT_NAME"
+    fi
+elif [ "$CLOUD_PROVIDER" = "AWS" ]; then
+    AWS_TYPE=$(fetch_imds aws)
+    if [ -n "$AWS_TYPE" ]; then
+        MODEL_NAME="$AWS_TYPE"
+    elif [ -n "$PRODUCT_NAME" ]; then
+        MODEL_NAME="$PRODUCT_NAME"
+    fi
+fi
+
 DISK_CTRL=""
 if [ -f "/tmp/disk_model.txt" ]; then
     DISK_CTRL=$(cat /tmp/disk_model.txt)
 fi
 
-if [ -n "$CPU_DESC" ]; then
-    DISPLAY_TITLE="$CPU_DESC | $MODEL_NAME | SILICON DATA PLANE SCORECARD"
-else
-    DISPLAY_TITLE="$MODEL_NAME | SILICON DATA PLANE SCORECARD"
-fi
+DISPLAY_TITLE="$CPU_DESC | $MODEL_NAME | SILICON DATA PLANE SCORECARD"
 
 echo "=========================================================================="
 echo "  $DISPLAY_TITLE"

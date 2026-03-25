@@ -168,12 +168,59 @@ static int dp_write(const char *path, const char *buf, size_t size, off_t offset
     return size;
 }
 
+// Intercepts file deletion (unlink) - required by fio to clear test files
+static int dp_unlink(const char *path) {
+    // For benchmark purposes, we pretend to unlink but since this is a FUSE mount,
+    // the nvme_raw_0 file is always logically present. Return success.
+    if (strcmp(path, "/nvme_raw_0") != 0)
+        return -ENOENT;
+    
+    // Pretend file is deleted, but it will be logically "recreated" on next access
+    // (getattr always reports it exists)
+    return 0;
+}
+
+// Intercepts file truncation - fio may use this to resize/clear test files
+static int dp_truncate(const char *path, off_t size, struct fuse_file_info *fi) {
+    (void) fi;
+    if (strcmp(path, "/nvme_raw_0") != 0)
+        return -ENOENT;
+    
+    // For a raw device benchmark, truncate is a no-op
+    // The file always appears as 1GB regardless of requested size
+    return 0;
+}
+
+// Intercepts chmod - file permission changes
+static int dp_chmod(const char *path, mode_t mode, struct fuse_file_info *fi) {
+    (void) fi;
+    if (strcmp(path, "/nvme_raw_0") != 0)
+        return -ENOENT;
+    
+    // Pretend we changed permissions (no-op for our benchmark)
+    return 0;
+}
+
+// Intercepts chown - file ownership changes
+static int dp_chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_info *fi) {
+    (void) fi;
+    if (strcmp(path, "/nvme_raw_0") != 0)
+        return -ENOENT;
+    
+    // Pretend we changed ownership (no-op for our benchmark)
+    return 0;
+}
+
 static struct fuse_operations dp_oper = {
-    .getattr = dp_getattr,
-    .open    = dp_open,
-    .read    = dp_read,
-    .write   = dp_write,
-    .readdir = dp_readdir,
+    .getattr  = dp_getattr,
+    .unlink   = dp_unlink,
+    .chmod    = dp_chmod,
+    .chown    = dp_chown,
+    .truncate = dp_truncate,
+    .open     = dp_open,
+    .read     = dp_read,
+    .write    = dp_write,
+    .readdir  = dp_readdir,
 };
 
 // Start the FUSE loop
