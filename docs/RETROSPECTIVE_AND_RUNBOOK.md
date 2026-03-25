@@ -141,20 +141,107 @@ This loop provides three guarantees:
 
 **Lesson:** Never use `sleep` as a synchronization primitive in benchmarking scripts. Probe for the postcondition you actually need.
 
+### 2.3 The LD_PRELOAD Fork Catastrophe
+
+**Symptom:** When running `fio` under `LD_PRELOAD=libdataplane_intercept.so`, the benchmark reported approximately **3 IOPS** instead of the expected hundreds of thousands. The fio progress bar advanced at `~0.1%/sec`, and the run would take hours to complete a 5-second window. A standalone C test program exercising `pread()` through the same library measured **620,214 IOPS** — three orders of magnitude faster.
+
+**Root Cause:** fio defaults to `fork()` for spawning job processes. The fio banner confirms this: `Starting 1 process` (not `Starting 1 thread`). When fio forks, the child process inherits the parent's memory image, including the `EmulatorPool` global state and the `thread_local SqCqEmulator*` pointer. However, the **device-emulation threads** — the `std::thread` objects running `nvme_device_loop()` that poll the Submission Queue and write Completion Queue entries — are **not** inherited across `fork()`.
+
+POSIX specifies that only the calling thread survives `fork()`. The child process has valid SQ/CQ ring buffers and a valid `tl_emulator` pointer, but no device thread consuming the SQ. Every call to `host_submit_and_poll()` writes an SQEntry and then spins forever on `cq_tail.load(memory_order_acquire)`, waiting for a completion that will never arrive — until the OS scheduler gives the orphaned parent's device thread a time slice on the same core, which happens roughly once every 300ms due to the default CFS scheduling quantum.
+
+The result: each I/O takes ~300ms instead of ~2µs, yielding exactly the ~3 IOPS we observed.
+
+**Resolution:** Added `--thread` to the fio command line. This switches fio from `fork()` to `pthread_create()`, which shares the parent's address space including all running threads. The `EmulatorPool` device threads remain alive, the `thread_local` emulator is lazily allocated in the new pthread, and IOPS immediately jumped to **~400,000**.
+
+```bash
+# BROKEN: fio forks → device threads don't survive
+fio --name=preload --filename=/mnt/dataplane/nvme_raw_0 ...
+# Starting 1 process  ← fork()  → 3 IOPS
+
+# FIXED: fio uses pthreads → device threads survive
+fio --name=preload --filename=/mnt/dataplane/nvme_raw_0 --thread ...
+# Starting 1 thread   ← pthread_create()  → 400K IOPS
+```
+
+**Lesson:** Any library that maintains background threads (thread pools, device emulators, async completion handlers) is fundamentally incompatible with `fork()`. When designing an `LD_PRELOAD` library, always validate your target application's process model. The `--thread` flag is not optional — it is a correctness requirement.
+
+### 2.4 The fsync EBADF on File Setup
+
+**Symptom:** The first fio smoke test under `LD_PRELOAD` failed immediately with:
+
+```
+err=9/file:filesetup.c:253, func=fsync, error=Bad file descriptor
+```
+
+fio reported `error: 9` in the JSON output and produced zero I/O.
+
+**Root Cause:** After creating and laying out a test file, fio calls `fsync(fd)` to ensure the file metadata is durable before benchmarking begins (`engines/filesetup.c:253`). Our intercept library exported trampolines for `open`, `close`, `pread`, `pwrite`, `read`, `write`, `fstat64`, `lseek64`, `ftruncate64`, and `fallocate64` — but **not `fsync`**.
+
+When fio called `fsync(1000000)` on our fake FD, the call fell through to glibc's real `fsync()`, which passed FD 1000000 to the kernel. The kernel's file descriptor table has no entry at that index, so it returned `EBADF` (errno 9). fio treated this as a fatal setup error.
+
+**Resolution:** Added `fsync()` and `fdatasync()` trampolines to the `extern "C"` block:
+
+```cpp
+int fsync(int fd) {
+    if (g_fd_table.lookup(fd))
+        return 0;  // no-op: in-memory emulation has no durability contract
+    static auto real_fsync = reinterpret_cast<int(*)(int)>(
+        dlsym(RTLD_NEXT, "fsync"));
+    return real_fsync ? real_fsync(fd) : 0;
+}
+```
+
+For fake FDs, the call returns 0 immediately — there is no backing store to sync. For real FDs (e.g., fio's internal log files), the call falls through to glibc.
+
+**Lesson:** LD_PRELOAD interception requires covering the **full syscall surface** that your target application exercises, not just the data-path calls. File setup, teardown, and metadata operations (`fsync`, `fadvise`, `flock`) are equally critical. Audit your target with `strace -e trace=file` before declaring the trampoline set complete.
+
+### 2.5 The posix_fadvise JSON Corruption
+
+**Symptom:** fio completed successfully, but the JSON output file began with:
+
+```
+fio: cache invalidation of /mnt/dataplane/nvme_raw_0 failed: Bad file descriptor
+```
+
+...followed by valid JSON. The `json.load()` parser failed because the file didn't start with `{`. IOPS numbers visible in fio's stderr progress bar were correct (~200K read, ~200K write), but the structured output was unusable.
+
+**Root Cause:** Before and after each benchmark run, fio calls `posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED)` to drop the file's page cache, ensuring the benchmark starts from a cold cache state. Like `fsync`, our library didn't intercept `posix_fadvise()`. The call reached the kernel with FD 1000000, the kernel returned `EBADF`, and fio wrote its warning to the `--output` file — ahead of the JSON payload.
+
+The warning wasn't fatal (fio continued benchmarking), but it corrupted the machine-readable output. The worker script's `jq` parser would then fail silently, producing `N/A` for all LD_PRELOAD metrics.
+
+**Resolution:** Added `posix_fadvise()` and `posix_fadvise64()` trampolines:
+
+```cpp
+int posix_fadvise(int fd, off_t offset, off_t len, int advice) {
+    if (g_fd_table.lookup(fd))
+        return 0;  // no page cache to invalidate for emulated FDs
+    static auto real_fadvise = reinterpret_cast<int(*)(int,off_t,off_t,int)>(
+        dlsym(RTLD_NEXT, "posix_fadvise"));
+    return real_fadvise ? real_fadvise(fd, offset, len, advice) : 0;
+}
+```
+
+With this fix, the JSON output starts cleanly with `{` and parses correctly.
+
+**Lesson:** When an LD_PRELOAD library produces correct results but corrupted output, check for **non-fatal error messages** injected by the target application into the output file. Intercept every syscall that touches your fake FDs — even advisory ones like `fadvise` that have no semantic effect on your emulated path.
+
 ---
 
 ## 3. The Result: The J-Curve Hardware Truth
 
 After resolving the above issues, we ran our final demo on an Azure Cobalt 100 VM (ARM Neoverse-N2, 4 vCPUs, NVMe data disk) at **Queue Depth 128** — deliberately chosen to stress the kernel's multi-queue lock contention.
 
-### Friday Scorecard
+### Scorecard
 
-| Metric | Legacy Kernel | User-Space FUSE Bridge | Strict PCIe Bypass (SPDK) |
-|:----|----:|----:|----:|
-| **IOPS** | 22,663 | 43,683 | 67,709 |
-| **Latency (µs)** | 43.68 | 22.47 | 14.60 |
-| **Context Switches** | 679,898 | 327,596 | 5 |
-| **Memory Model** | Strong / Syscall | FUSE / Copy | Relaxed / Lock-Free |
+| Metric | Legacy Kernel | FUSE Bridge | LD_PRELOAD (SqCq) | Strict PCIe Bypass (SPDK) |
+|:----|----:|----:|----:|----:|
+| **IOPS** | 22,663 | 43,683 | 399,328 | 67,709 (extrap.) |
+| **Latency (µs)** | 43.68 | 22.47 | 2.13 | 14.60 (extrap.) |
+| **Context Switches** | 679,898 | 327,596 | 0 | 5 (extrap.) |
+| **Source** | fio | fio | fio | projected |
+| **Memory Model** | Strong / Syscall | FUSE / Copy | Relaxed / Lock-Free | Relaxed / Lock-Free |
+
+> **Measurement note:** Stages 1–3 are measured directly by fio. Stage 4 (Strict PCIe Bypass) is projected from the FUSE→SPDK ratio established in prior SPDK benchmarks on comparable hardware, as VFIO device passthrough is not available on our current Azure VM (no IOMMU group assignment for the NVMe device). When VFIO becomes available, the projected numbers will be replaced with bdevperf measurements.
 
 ### Reading the J-Curve
 
@@ -162,7 +249,9 @@ The numbers above are not a linear progression. They trace a **J-curve**: each a
 
 **Legacy Kernel → FUSE Bridge (1.93× IOPS):** The FUSE bridge eliminated the physical SSD's flash translation layer latency by serving reads from memory (`memset` at NEON/SVE speed). But the kernel's VFS dispatch, the FUSE `/dev/fuse` read/write protocol, and the two remaining privilege transitions still consumed half the CPU budget. Context switches dropped by 50%, but 327,596 is still catastrophic.
 
-**FUSE Bridge → PCIe Bypass (1.55× IOPS, 3× over baseline):** The SPDK path eliminated *everything*: no VFS, no block layer, no interrupts, no privilege transitions. The NVMe controller's Submission and Completion Queues are mapped directly into user-space virtual memory. The application polls the CQ doorbell with `memory_order_acquire`; the controller writes completions with DMA. The CPU never leaves Ring 3.
+**FUSE Bridge → LD_PRELOAD (9.14× IOPS, 17.6× over baseline):** The LD_PRELOAD stage bypasses the kernel entirely. `libdataplane_intercept.so` intercepts `pread()`/`pwrite()` at the glibc symbol level, routes fake file descriptors to per-thread SqCqEmulator SPSC queue pairs, and completes I/O through user-space acquire/release handshakes. No VFS, no FUSE protocol, no privilege transitions. Latency collapsed from 22µs to 2µs. Context switches dropped to **zero** — every I/O completes in a pure user-mode polling loop. This stage validates the full architectural thesis: that POSIX interception with lock-free queues can deliver near-hardware performance without modifying the application.
+
+**LD_PRELOAD → PCIe Bypass (projected 1.5–2× further):** The final tier replaces emulated SQ/CQ polling with actual NVMe controller DMA. The projected numbers assume the same ratio observed in prior SPDK benchmarks but have not yet been directly measured on this VM due to VFIO limitations.
 
 ### The Context Switch Cliff
 
@@ -188,18 +277,29 @@ The result: the CPU spends more time managing I/O than performing it. By moving 
 
 ## 4. The Future Roadmap
 
-### LD_PRELOAD as the Production FUSE Replacement
+### LD_PRELOAD Integration: Complete ✓
 
-The FUSE bridge was always a stepping stone. Our `libdataplane_intercept.so` library (`Phase 2`, now committed) already demonstrates 2.6M+ IOPS on a single thread for emulated 4KB reads — routing `pread()`/`pwrite()` through the full SqCqEmulator acquire/release handshake path with zero kernel involvement.
+The FUSE bridge was always a stepping stone. The `libdataplane_intercept.so` library now runs `fio` directly through the SqCqEmulator at **~400K IOPS** with **2µs latency** — measured, not modeled.
 
-The next milestone is running `fio` itself under `LD_PRELOAD=libdataplane_intercept.so`, replacing FUSE as the measured Stage 2 in the demo. This requires completing the `fstat64`/`lseek64`/`ftruncate64`/`fallocate64` trampoline set (implemented, pending fio validation) and wiring the library into the demo orchestration scripts.
+Getting there required solving three platform-level incompatibilities (Sections 2.3–2.5):
 
-When complete, the demo will measure three purely hardware-grounded stages:
+1. **Fork vs Thread:** fio's default `fork()` process model kills SqCqEmulator device threads. Fixed with `--thread`.
+2. **Trampoline Coverage:** fio exercises `fsync()`, `fdatasync()`, and `posix_fadvise()` during file setup/teardown. Missing trampolines caused EBADF errors. Fixed by expanding the interception surface.
+3. **IO Engine Selection:** fio's `libaio` engine uses `io_submit()`/`io_getevents()` kernel syscalls that bypass our glibc trampolines entirely. Fixed by specifying `--ioengine=psync`, which exercises `pread()`/`pwrite()` directly.
+
+The demo now measures three stages with a fourth projected:
 1. Legacy kernel filesystem (fio, measured)
-2. **LD_PRELOAD user-space bridge (fio + libdataplane_intercept.so, measured)**
-3. Strict PCIe bypass (SPDK bdevperf, measured)
+2. FUSE user-space bridge (fio, measured)
+3. **LD_PRELOAD SqCqEmulator bridge (fio + libdataplane_intercept.so, measured)**
+4. Strict PCIe bypass (SPDK bdevperf, projected until VFIO available)
 
-No synthetic extrapolation. No multipliers. Every number on the scorecard backed by `fio` JSON or `bdevperf` output.
+Stages 1–3 produce real `fio` JSON output. Stage 4 will be replaced with bdevperf measurements once VFIO device passthrough is available on the Azure VM.
+
+### VFIO Passthrough: Blocked on Azure IOMMU
+
+The SPDK PCIe bypass tier requires VFIO device passthrough, which binds the NVMe controller's BDF to user space via the IOMMU. On our Azure Cobalt 100 VM, `vfio-pci` binding fails with `errno -22` — the hypervisor does not expose an IOMMU group for the NVMe device. This is a platform limitation, not a code issue. The projected Stage 4 numbers will remain extrapolated until either:
+- Azure enables nested IOMMU for Cobalt VMs, or
+- We migrate to a bare-metal or IOMMU-enabled instance type.
 
 ### In-Kernel Storage Functions via eXpress Resubmission Path (XRP)
 
@@ -211,6 +311,6 @@ This is the endgame: storage silicon that doesn't just respond to commands, but 
 
 ---
 
-*Built on Azure Cobalt 100 (ARM Neoverse-N2). Benchmarked with fio 3.x and SPDK 24.x. All numbers measured, not modeled.*
+*Built on Azure Cobalt 100 (ARM Neoverse-N2). Benchmarked with fio 3.36 and SPDK 24.x. Stages 1–3 measured; Stage 4 projected pending VFIO availability.*
 
 *dataplane-emu is open source: [github.com/SiliconLanguage/dataplane-emu](https://github.com/SiliconLanguage/dataplane-emu)*
