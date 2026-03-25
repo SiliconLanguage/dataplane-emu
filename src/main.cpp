@@ -21,6 +21,9 @@
 #include <thread>
 #include <cstdint>
 #include <csignal>
+#include <exception>
+#include <string>
+#include <vector>
 #include <unistd.h>
 #include <fuse.h>
 #include <sys/wait.h>
@@ -148,18 +151,35 @@ int main(int argc, char* argv[]) {
     if (enable_kernel_bypass) {
         std::cout << "Starting kernel-bypass backend..." << std::endl;
 
-        const char* fuse_argv[] = {
+        std::vector<std::string> fuse_args_storage = {
             argv[0],
             "-f",
             "-o",
             "allow_other",
-            global_mountpoint.c_str(),
-            NULL
+            global_mountpoint,
         };
-        int fuse_argc = 5;
+        std::vector<char*> fuse_argv;
+        fuse_argv.reserve(fuse_args_storage.size());
+        for (auto& arg : fuse_args_storage) {
+            fuse_argv.push_back(arg.data());
+        }
+        int fuse_argc = static_cast<int>(fuse_argv.size());
+        int rc = 1;
 
         std::cout << "Mounting FUSE bridge at " << global_mountpoint << "..." << std::endl;
-        return run_fuse_interceptor(fuse_argc, (char**)fuse_argv, &engine);
+        try {
+            rc = run_fuse_interceptor(fuse_argc, fuse_argv.data(), &engine);
+        } catch (const std::exception& ex) {
+            std::cerr << "FUSE bridge terminated with exception: " << ex.what() << std::endl;
+        } catch (...) {
+            std::cerr << "FUSE bridge terminated with an unknown exception." << std::endl;
+        }
+
+        engine.shutdown();
+        if (device_thread.joinable()) {
+            device_thread.join();
+        }
+        return rc;
     } else {
         std::cout << "Simulation running. Press Ctrl+C to exit." << std::endl;
         device_thread.join();

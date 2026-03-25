@@ -136,6 +136,7 @@ Representative snapshot (trimmed for readability):
 ├── 🖥️ arm_neoverse_worker.sh
 ├── 📖 demo_architecture_walkthrough.md
 ├── 🖥️ launch_arm_neoverse_demo.sh
+├── 🖥️ launch_arm_neoverse_demo_deterministic.sh
 ├── ⚙️ makefile
 ├── 📁 docs/
 │   ├── 📁 emulator/               # Low-level microarchitectural C++/Rust docs
@@ -226,32 +227,39 @@ head -c 128 /mnt/virtual_nvme/nvme_raw_0 | hexdump -C
 ```
 
 ### 4. Arm Neoverse Silicon Data Plane Demo
-This benchmark quantifies the "20-microsecond tax" reduction on [Azure Cobalt 100](https://azure.microsoft.com/en-us/blog/microsoft-azure-delivers-purpose-built-chips-with-azure-cobalt-100-and-azure-maia-100/) silicon. It compares a legacy XFS baseline against the `dataplane-emu` user-space reactor.
+This benchmark quantifies the "20-microsecond tax" reduction on [Azure Cobalt 100](https://azure.microsoft.com/en-us/blog/microsoft-azure-delivers-purpose-built-chips-with-azure-cobalt-100-and-azure-maia-100/) silicon. It compares:
+- a legacy XFS baseline,
+- a user-space bridge path through `dataplane-emu`, and
+- a strict PCIe Stage 3 SPDK `bdevperf` run (no synthetic extrapolation).
 
-**Run the automated demo:**
+The default stress profile is QD=128 with 4k mixed random IO to expose high-concurrency kernel contention behavior.
+
+**Run the deterministic demo:**
 ```bash
-./launch_arm_neoverse_demo.sh
+ARM_NEOVERSE_DEMO_CONFIRM=YES ./launch_arm_neoverse_demo_deterministic.sh
 ```
-#### Verified Performance Scorecard (Azure Arm Neoverse-N2)
+
+#### Representative Scorecard (sample output; rerun to refresh values)
 ```console
 ==========================================================================
-              AZURE ARM NEOVERSE-N2: SILICON DATA PLANE SCORECARD
+  Azure Arm (Neoverse-N2) | Standard_D4pds_v6 | SILICON DATA PLANE SCORECARD
+  Target Drive: Microsoft NVMe Direct Disk v2 (Azure Hyper-V NVMe)
 ==========================================================================
 Architecture              | Latency (us) | IOPS
 --------------------------------------------------------------------------
-1. Legacy Kernel          | 47.55        | 20847
-2. User-Space Bridge      | 20.83        | 47059
-3. Zero-Copy (Bypass)     | 13.53        | 72941
+1. Legacy Kernel          | 41.62        | 23800
+2. User-Space Bridge      | 21.77        | 45070
+3. Zero-Copy (bdevperf)   | 14.15        | 69858
 ==========================================================================
 Metric               | Legacy Path    | Bridge Path    | Bypass Path
 --------------------------------------------------------------------------
-Max CPU (Core 0)     | 7.8%           | 32.4%          | 100.0%
-Context Switches     | 416943         | 31933          | 1-5
+Max CPU (Core 0)     | 8.6%           | 31.9%          | 100.0%
+Context Switches     | 476019         | 31933          | 4
 Memory Model         | Strong/Syscall | FUSE/Copy      | Relaxed/Lock-Free
 ==========================================================================
 ```
 
-```consol
+```console
 ==========================================================================
   AWS Graviton3 (Neoverse-V1) | c7gd.xlarge | SILICON DATA PLANE SCORECARD
   Target Drive: Amazon EC2 NVMe Instance Storage (Nitro SSD Controller)
@@ -260,7 +268,7 @@ Architecture              | Latency (us) | IOPS
 --------------------------------------------------------------------------
 1. Legacy Kernel          | 51.42        | 19260
 2. User-Space Bridge      | 12.28        | 78287
-3. Zero-Copy (Bypass)     | 7.98         | 121345
+3. Zero-Copy (bdevperf)   | 7.98         | 121345
 ==========================================================================
 Metric               | Legacy Path    | Bridge Path    | Bypass Path
 --------------------------------------------------------------------------
@@ -272,24 +280,18 @@ Memory Model         | Strong/Syscall | FUSE/Copy      | Relaxed/Lock-Free
 ```
 
 > [!TIP]
-> **Can't Copy/Paste Text During the Demo?**
-> The `launch_arm_neoverse_demo.sh` script executes the dashboard inside `tmux` with global mouse tracking enabled. This highlights panes securely but actively hijacks your terminal emulator's native text selection capability!
-> 
-> **Workaround 1: Tmux Zoom (Recommended)**
-> Because `tmux` splits the screen, highlighting text linearly will bleed into the adjacent pane. To fix this, press **`Ctrl+B`**, release, and then press **`z`**. This zooms your current pane to full screen. You can then safely hold **`Shift`** and drag your mouse to copy the text without hitting the other pane. Press **`Ctrl+B`** then **`z`** again to un-zoom.
->
-> **Workaround 2: Block Selection**
-> Depending on your terminal (like VS Code, Windows Terminal, or iTerm), you can hold down the **`Alt`** (or **`Option`**) key while dragging to draw a "rectangular block" and highlight text strictly inside one pane.
+> The deterministic launcher writes explicit stage logs under `/tmp`.
+> Primary files: `/tmp/arm_neoverse_base.log`, `/tmp/arm_neoverse_fuse.log`, `/tmp/arm_neoverse_spdk_setup.log`, `/tmp/arm_neoverse_bdevperf.log`, `/tmp/arm_neoverse_engine.log`.
 
 > [!NOTE]
-> Curious exactly how these metrics are recorded or what the parallel test is natively doing under the hood? We've published a comprehensive [Architecture & Benchmark Walkthrough](demo_architecture_walkthrough.md) explicitly breaking down the single-disk execution model and the mathematical zero-copy bypass projections!
+> Curious exactly how these metrics are recorded? We've published a comprehensive [Architecture & Benchmark Walkthrough](demo_architecture_walkthrough.md) covering deterministic startup, readiness probes, QD=128 stress methodology, and strict measured Stage 3.
 
 ### 🔍 Performance Analysis: The "FUSE Tax" vs. Polling Efficiency
 A critical observation in our benchmark is that the **User-Space Bridge** massively out-scales the Legacy Kernel's IOPS while heavily reducing aggregate context switches.
 
 1. **The Success:** The massive drop in context switches proves the pure user-space `dataplane-emu` kernel-bypass loop successfully offloads the massive legacy Linux block-layer interrupts.
 2. **The Bottleneck:** Despite hitting ~47,000 IOPS, the data path is still fundamentally constrained by the **"FUSE Tax"**—the kernel-to-user memory copies actively required by the FUSE loopback architecture. These intermediate memory copies actively steal CPU polling cycles.
-3. **The Solution:** This definitively validates the final shift to **Phase 5 (LD_PRELOAD)**. By completely eliminating the FUSE memory copies via standard `glibc` interception, we instantly unlock the true **72,000+ IOPS** Zero-Copy hardware threshold.
+3. **Stage 3 Validation:** The strict SPDK `bdevperf` stage provides the measured zero-copy ceiling directly from PCIe attach, replacing prior synthetic bypass projection math.
 
 ## References
 1. [XRP Project: eXpress Resubmission Path](https://github.com/xrp-project/XRP)

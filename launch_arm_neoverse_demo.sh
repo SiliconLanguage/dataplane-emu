@@ -8,6 +8,8 @@ X="${DEMO_MOUNT_DIR:-/mnt/nvme_xfs}"
 C="${DEMO_ARM_DIR:-/tmp/arm_neoverse}"
 TMUX_SESSION="d"
 RIGHT_PANE_PERCENT="${DEMO_RIGHT_PANE_PERCENT:-60}"
+ENGINE_LOG="/tmp/arm_neoverse_engine.log"
+ENGINE_PID=""
 
 if ! [[ "$RIGHT_PANE_PERCENT" =~ ^[0-9]+$ ]] || [ "$RIGHT_PANE_PERCENT" -lt 35 ] || [ "$RIGHT_PANE_PERCENT" -gt 85 ]; then
     RIGHT_PANE_PERCENT=60
@@ -29,6 +31,15 @@ require_cmd findmnt
 require_cmd readlink
 require_cmd grep
 require_cmd awk
+
+cleanup() {
+    tmux has-session -t "$TMUX_SESSION" 2>/dev/null && tmux kill-session -t "$TMUX_SESSION" || true
+    if [ -n "$ENGINE_PID" ] && kill -0 "$ENGINE_PID" 2>/dev/null; then
+        sudo kill "$ENGINE_PID" 2>/dev/null || true
+    fi
+}
+
+trap cleanup EXIT INT TERM
 
 # Accurately identify the non-root NVMe block device to benchmark.
 ROOT_SRC=$(findmnt -n -o SOURCE / || true)
@@ -100,12 +111,22 @@ fi
 # Explicitly block SPDK from hijacking the OS drive.
 export PCI_BLOCKED="$ROOT_NVME_BDF nvme0"
 
-# Dynamically determine the correct SPDK deployment directory for the cloud provider.
-CPU_PART_HEX=$(grep -im1 "CPU part" /proc/cpuinfo | awk -F: '{print $2}' | tr -d " \t\n\r" | tr 'A-Z' 'a-z')
-case "$CPU_PART_HEX" in
-    "0xd49") SPDK_DIR="./spdk-azure" ;;
-    *) SPDK_DIR="./spdk-aws" ;;
-esac
+# Locate SPDK setup script from known paths.
+SPDK_SETUP=""
+for candidate in "./spdk/scripts/setup.sh" "./spdk-azure/scripts/setup.sh" "./spdk-aws/scripts/setup.sh"; do
+    if [ -f "$candidate" ]; then
+        SPDK_SETUP="$candidate"
+        break
+    fi
+done
+if [ -z "$SPDK_SETUP" ]; then
+    echo "Missing SPDK setup script. Checked: ./spdk/scripts/setup.sh, ./spdk-azure/scripts/setup.sh, ./spdk-aws/scripts/setup.sh"
+    exit 1
+fi
+
+echo "Using SPDK setup script: $SPDK_SETUP"
+echo "Stage logs: /tmp/arm_neoverse_sanitize.log /tmp/arm_neoverse_base.log /tmp/arm_neoverse_spdk_setup.log /tmp/arm_neoverse_fuse.log"
+echo "Engine log: $ENGINE_LOG"
 
 mkdir -p "$C"
 DISK_MN=$(cat "/sys/block/$(basename "$D")/device/model" 2>/dev/null | xargs)
@@ -122,6 +143,7 @@ sudo mkdir -p "$C" "$X"
 spinner() {
     local pid=$1
     local msg="$2"
+    local log_file="${3:-}"
     local spin='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
     local i=0
     while kill -0 $pid 2>/dev/null; do
@@ -129,6 +151,17 @@ spinner() {
         printf "\r%s %s" "$msg" "${spin:$i:1}"
         sleep 0.1
     done
+    local rc=0
+    wait "$pid" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        printf "\r%s [FAILED]\n" "$msg"
+        if [ -n "$log_file" ] && [ -s "$log_file" ]; then
+            echo "--- Failure details ($log_file) ---"
+            tail -n 40 "$log_file"
+            echo "-----------------------------------"
+        fi
+        return "$rc"
+    fi
     printf "\r%s ✔ \n" "$msg"
 }
 
@@ -136,6 +169,7 @@ progress_bar() {
     local pid=$1
     local msg="$2"
     local duration=$3
+    local log_file="${4:-}"
     local elapsed=0
     while kill -0 $pid 2>/dev/null; do
         local percent=$(( elapsed * 100 / duration ))
@@ -150,46 +184,89 @@ progress_bar() {
         sleep 1
         elapsed=$(( elapsed + 1 ))
     done
+    local rc=0
+    wait "$pid" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        printf "\r%s [FAILED]\n" "$msg"
+        if [ -n "$log_file" ] && [ -s "$log_file" ]; then
+            echo "--- Failure details ($log_file) ---"
+            tail -n 40 "$log_file"
+            echo "-----------------------------------"
+        fi
+        return "$rc"
+    fi
     local full_bar=$(printf "%20s" | tr ' ' '#')
     printf "\r%s [%s] 100%%\n" "$msg" "$full_bar"
 }
 
 (
-sudo wipefs -a "$D" > /dev/null 2>&1
+sudo wipefs -a "$D" > /tmp/arm_neoverse_sanitize.log 2>&1
 # 3. Safely run the SPDK setup, preserving the environment variable
-sudo -E ${SPDK_DIR}/scripts/setup.sh reset > /dev/null 2>&1
+sudo -E bash "$SPDK_SETUP" reset >> /tmp/arm_neoverse_sanitize.log 2>&1
 sleep 2
 ) &
-spinner $! "⚙️ Sanitizing Hardware..."
+spinner $! "⚙️ Sanitizing Hardware..." /tmp/arm_neoverse_sanitize.log
+echo "✅ Sanitize stage complete"
 
 (
 # Try mounting silently; if it fails (as expected), format silently and mount.
-sudo mount "$D" "$X" > /dev/null 2>&1 || (sudo mkfs.xfs -f "$D" > /dev/null 2>&1 && sudo mount "$D" "$X" > /dev/null 2>&1)
+sudo mount "$D" "$X" > /tmp/arm_neoverse_base.log 2>&1 || (sudo mkfs.xfs -f "$D" >> /tmp/arm_neoverse_base.log 2>&1 && sudo mount "$D" "$X" >> /tmp/arm_neoverse_base.log 2>&1)
 
 sudo chown "$USER":"$USER" "$X"
-sudo fio --name=base --directory="$X" --rw=randrw --bs=4k --size=4G --direct=1 --iodepth=128 --runtime=30 --time_based --group_reporting --output-format=json --output=x.json > /dev/null 2>&1
-sudo umount -l "$X" > /dev/null 2>&1
+ : > x.json
+sudo fio --name=base --directory="$X" --rw=randrw --bs=4k --size=4G --direct=1 --iodepth=128 --runtime=30 --time_based --group_reporting --output-format=json --output=x.json >> /tmp/arm_neoverse_base.log 2>&1
+sudo umount -l "$X" >> /tmp/arm_neoverse_base.log 2>&1
 sleep 2
 ) &
-progress_bar $! "⚙️ Running Legacy Baseline (30s)..." 33
+progress_bar $! "⚙️ Running Legacy Baseline (30s)..." 33 /tmp/arm_neoverse_base.log
+echo "✅ Baseline stage complete (x.json updated)"
 
 (
 # Safely run the SPDK setup, preserving the environment variable
-HUGEMEM=2048 sudo -E ${SPDK_DIR}/scripts/setup.sh > /dev/null 2>&1
+HUGEMEM=2048 sudo -E bash "$SPDK_SETUP" > /tmp/arm_neoverse_spdk_setup.log 2>&1
 sleep 3
 ) &
-spinner $! "⚙️ Allocating Hugepages & Binding NVMe..."
+spinner $! "⚙️ Allocating Hugepages & Binding NVMe..." /tmp/arm_neoverse_spdk_setup.log
+echo "✅ SPDK setup stage complete"
+
+rm -f "$ENGINE_LOG"
+echo "🚀 Starting dataplane engine..."
+sudo ./build/dataplane-emu -m "$C" -b -k >"$ENGINE_LOG" 2>&1 &
+ENGINE_PID=$!
+echo "$ENGINE_PID" > /tmp/arm_neoverse_engine.pid
+
+echo "⏳ Waiting for bridge readiness at $C/nvme_raw_0"
+ready=0
+for _ in $(seq 1 150); do
+    if [ -e "$C/nvme_raw_0" ]; then
+        ready=1
+        break
+    fi
+    if ! kill -0 "$ENGINE_PID" 2>/dev/null; then
+        echo "dataplane-emu exited before bridge became ready."
+        [ -s "$ENGINE_LOG" ] && tail -n 80 "$ENGINE_LOG"
+        exit 1
+    fi
+    sleep 0.2
+done
+
+if [ "$ready" -ne 1 ]; then
+    echo "Bridge node $C/nvme_raw_0 did not appear in time."
+    [ -s "$ENGINE_LOG" ] && tail -n 80 "$ENGINE_LOG"
+    exit 1
+fi
+echo "✅ Engine ready (pid=$ENGINE_PID)"
 
 echo "🚀 Launching Resilient Dashboard..."
 tmux has-session -t "$TMUX_SESSION" 2>/dev/null && tmux kill-session -t "$TMUX_SESSION"
 sleep 1
 
-# Pane 0: Engine (Left) - Silences the harmless FUSE thread warning
-tmux new-session -d -s "$TMUX_SESSION" "bash -c \"cd \\\"$SCRIPT_DIR\\\" && sudo ./build/dataplane-emu -m $C -b -k 2>&1 | grep --line-buffered -v 'Ignoring invalid max threads' ; sleep 15\""
+# Pane 0: Engine log (Left)
+tmux new-session -d -s "$TMUX_SESSION" "bash -c \"tail -n 80 -F '$ENGINE_LOG'\""
 
 # Pane 1: Worker (Right)
-if ! tmux split-window -h -l "${RIGHT_PANE_PERCENT}%" -t "$TMUX_SESSION":0 "sleep 5 && cd \"$SCRIPT_DIR\" && ./arm_neoverse_worker.sh; echo ''; echo '--- Demo Complete. Press any key to Exit ---'; read -n 1 -s; tmux kill-session -t $TMUX_SESSION"; then
-    tmux split-window -h -l "${RIGHT_PANE_PERCENT}%" -t "$TMUX_SESSION" "sleep 5 && cd \"$SCRIPT_DIR\" && ./arm_neoverse_worker.sh; echo ''; echo '--- Demo Complete. Press any key to Exit ---'; read -n 1 -s; tmux kill-session -t $TMUX_SESSION"
+if ! tmux split-window -h -l "${RIGHT_PANE_PERCENT}%" -t "$TMUX_SESSION":0 "cd \"$SCRIPT_DIR\" && ENGINE_PID=$ENGINE_PID ./arm_neoverse_worker.sh; echo ''; echo '--- Demo Complete. Press any key to Exit ---'; read -n 1 -s; tmux kill-session -t $TMUX_SESSION"; then
+    tmux split-window -h -l "${RIGHT_PANE_PERCENT}%" -t "$TMUX_SESSION" "cd \"$SCRIPT_DIR\" && ENGINE_PID=$ENGINE_PID ./arm_neoverse_worker.sh; echo ''; echo '--- Demo Complete. Press any key to Exit ---'; read -n 1 -s; tmux kill-session -t $TMUX_SESSION"
 fi
 
 tmux set-option -g mouse on

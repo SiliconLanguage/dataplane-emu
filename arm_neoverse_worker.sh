@@ -17,6 +17,15 @@ require_cmd bc
 require_cmd awk
 require_cmd grep
 require_cmd pgrep
+require_cmd stat
+
+NO_CLEAR="${DEMO_NO_CLEAR:-1}"
+
+maybe_clear() {
+    if [ "$NO_CLEAR" != "1" ]; then
+        clear
+    fi
+}
 
 fetch_imds() {
     local mode="$1"
@@ -65,6 +74,7 @@ progress_bar() {
     local pid=$1
     local msg="$2"
     local duration=$3
+    local log_file="${4:-}"
     local elapsed=0
     while kill -0 $pid 2>/dev/null; do
         local percent=$(( elapsed * 100 / duration ))
@@ -79,17 +89,62 @@ progress_bar() {
         sleep 1
         elapsed=$(( elapsed + 1 ))
     done
+    local rc=0
+    wait "$pid" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        printf "\r%s [FAILED]\n" "$msg"
+        if [ -n "$log_file" ] && [ -s "$log_file" ]; then
+            echo "--- Failure details ($log_file) ---"
+            tail -n 40 "$log_file"
+            echo "-----------------------------------"
+        fi
+        return "$rc"
+    fi
     local full_bar=$(printf "%20s" | tr ' ' '#')
     printf "\r%s [%s] 100%%\n" "$msg" "$full_bar"
 }
 
-( sleep 5 ) &
-spinner $! "⏳ Waiting for Data Plane Engine to Initialize..."
-clear
+ENGINE_PID_INPUT="${ENGINE_PID:-}"
+BRIDGE_FILE="/tmp/arm_neoverse/nvme_raw_0"
+
+echo "⏳ Waiting for Data Plane Engine bridge node..."
+ready=0
+for _ in $(seq 1 200); do
+    if [ -n "$ENGINE_PID_INPUT" ] && ! kill -0 "$ENGINE_PID_INPUT" 2>/dev/null; then
+        echo "Engine PID $ENGINE_PID_INPUT exited before bridge benchmark started."
+        [ -s /tmp/arm_neoverse_engine.log ] && tail -n 80 /tmp/arm_neoverse_engine.log
+        exit 1
+    fi
+    if [ -e "$BRIDGE_FILE" ]; then
+        ready=1
+        break
+    fi
+    sleep 0.2
+done
+
+if [ "$ready" -ne 1 ]; then
+    echo "Bridge file missing: $BRIDGE_FILE"
+    [ -s /tmp/arm_neoverse_engine.log ] && tail -n 80 /tmp/arm_neoverse_engine.log
+    exit 1
+fi
+
+maybe_clear
 
 echo "🚀 STAGE 2: Benchmarking User-Space Bridge at QD=128..."
-( sudo fio --name=fuse --filename=/tmp/arm_neoverse/nvme_raw_0 --rw=randrw --bs=4k --size=4G --direct=1 --iodepth=128 --runtime=30 --group_reporting --output-format=json --output=fuse.json > /dev/null 2>&1 ) &
-progress_bar $! "🔥 Stress-Testing Silicon Data Plane Bridge (30s)..." 31
+echo "📄 Bridge log: /tmp/arm_neoverse_fuse.log"
+: > fuse.json
+BRIDGE_FILE_BYTES=$(stat -Lc %s "$BRIDGE_FILE" 2>/dev/null || echo 0)
+if [ "$BRIDGE_FILE_BYTES" -le 0 ]; then
+    echo "Invalid bridge backing size for $BRIDGE_FILE: $BRIDGE_FILE_BYTES"
+    exit 1
+fi
+BRIDGE_SIZE_BYTES=$((1024 * 1024 * 1024))
+if [ "$BRIDGE_FILE_BYTES" -lt "$BRIDGE_SIZE_BYTES" ]; then
+    BRIDGE_SIZE_BYTES="$BRIDGE_FILE_BYTES"
+fi
+
+( sudo fio --name=fuse --filename="$BRIDGE_FILE" --rw=randrw --bs=4k --size="$BRIDGE_SIZE_BYTES" --direct=1 --iodepth=128 --runtime=30 --group_reporting --output-format=json --output=fuse.json > /tmp/arm_neoverse_fuse.log 2>&1 ) &
+progress_bar $! "🔥 Stress-Testing Silicon Data Plane Bridge (30s)..." 31 /tmp/arm_neoverse_fuse.log
 sudo chown "$USER":"$USER" fuse.json 2>/dev/null || true
 chmod 644 fuse.json 2>/dev/null || true
 
@@ -108,6 +163,17 @@ fi
 JX=$(sed -n '/^{/,$p' x.json 2>/dev/null || echo "{}")
 JF=$(sed -n '/^{/,$p' fuse.json 2>/dev/null || echo "{}")
 
+XERR=$(echo "$JX" | jq -r '(.jobs[0].error//0)' | awk '{print int($1+0)}')
+FERR=$(echo "$JF" | jq -r '(.jobs[0].error//0)' | awk '{print int($1+0)}')
+if [ "$XERR" -ne 0 ]; then
+    echo "Baseline fio failed with error code: $XERR"
+    exit 1
+fi
+if [ "$FERR" -ne 0 ]; then
+    echo "Bridge fio failed with error code: $FERR"
+    exit 1
+fi
+
 XL=$(echo "$JX" | jq -r '((.jobs[0].read.clat_ns.mean//0)+(.jobs[0].write.clat_ns.mean//0))/2000' | awk '{v=$1} END {printf "%.2f", v+0}')
 XI=$(echo "$JX" | jq -r '(.jobs[0].read.iops//0)+(.jobs[0].write.iops//0)' | awk '{v=$1} END {printf "%.0f", v+0}')
 XC=$(echo "$JX" | jq -r '(.jobs[0].usr_cpu//0)+(.jobs[0].sys_cpu//0)' | awk '{v=$1} END {printf "%.1f%%", v+0}')
@@ -119,14 +185,17 @@ FC=$(echo "$JF" | jq -r '(.jobs[0].usr_cpu//0)+(.jobs[0].sys_cpu//0)' | awk '{v=
 FS=$(echo "$JF" | jq -r '(.jobs[0].ctx//0)' | awk '{v=$1} END {print v+0}')
 
 PL=$(echo "scale=2; $FL * 0.65" | bc); PI=$(echo "$FI * 1.55" | bc | awk '{printf "%.0f", $0}')
-E=$(pgrep -x dataplane-emu | head -n 1 || true)
+E="$ENGINE_PID_INPUT"
+if [ -z "$E" ]; then
+    E=$(pgrep -x dataplane-emu | head -n 1 || true)
+fi
 if [ -n "$E" ] && [ -r "/proc/$E/status" ]; then
     CC=$(grep -i "ctxt" "/proc/$E/status" | awk '{s+=$2} END {print s+0}')
 else
     CC="N/A"
 fi
 
-clear
+maybe_clear
 # Determine cloud provider via local DMI data to avoid stale/cached metadata and network dependencies.
 CLOUD_PROVIDER="Unknown"
 SYS_VENDOR=$(cat /sys/devices/virtual/dmi/id/sys_vendor 2>/dev/null || true)
