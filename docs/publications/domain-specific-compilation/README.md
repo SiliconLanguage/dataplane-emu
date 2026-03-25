@@ -1,4 +1,4 @@
-# Deep Research: The Convergence of Domain-Specific Compilation
+# The Convergence of Domain-Specific Compilation
     **Bridging LLM Siliconization and Infrastructure Hardware Offloading**
     
     **Author:** Ping Long, Principal Systems Architect @ SiliconLanguage Foundry
