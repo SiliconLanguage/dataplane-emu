@@ -27,6 +27,7 @@ We have separated our documentation to serve both enterprise architects and syst
 High-level architectural documentation detailing our approach to AI training bottlenecks and autonomous orchestration.
 * **[Vision & Architecture Manifesto](docs/tensorplane/VISION.md)**: The "0-Kernel, 0-Copy, Hardware-Enlightened" data plane thesis.
 * **[Agentic Architecture & MCP](docs/tensorplane/AGENT_ARCHITECTURE.md)**: How we use the Model Context Protocol and a Mixture-of-Experts (MoE) to achieve recursive self-improvement and autonomous kernel optimization.
+* **[Agent Customization Change Control](docs/tensorplane/AGENT_CHANGE_CONTROL.md)**: The required update-review-approval flow for agent, prompt, instruction, and hook changes before merge to `main`.
 
 ### ⚙️ dataplane-emu (The Engine)
 Low-level microarchitectural documentation detailing the C++/Rust kernel-bypass implementation.
