@@ -37,9 +37,9 @@
 *.out
 *.app
 
-# Root source files
-*.c
-*.cpp
+# Root source files (scoped to repo root only; don't block src/)
+/*.c
+/*.cpp
 
 # debug information files
 *.dwo
