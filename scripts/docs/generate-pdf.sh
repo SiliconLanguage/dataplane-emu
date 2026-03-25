@@ -3,11 +3,20 @@
 # Stop the script if any command fails
 set -e
 
-# Define file paths relative to the repository root
-INPUT_FILE="docs/publications/eliminating-os-kernel/README.md"
-OUTPUT_FILE="docs/publications/eliminating-os-kernel/eliminating-os-kernel.pdf"
+# Define file paths relative to the repository root.
+# These can be overridden by environment variables to reuse the same toolchain
+# across multiple publication targets.
+INPUT_FILE="${PDF_INPUT_FILE:-docs/publications/eliminating-os-kernel/README.md}"
+OUTPUT_FILE="${PDF_OUTPUT_FILE:-docs/publications/eliminating-os-kernel/eliminating-os-kernel.pdf}"
 
 echo "Generating whitepaper PDF from $INPUT_FILE..."
+
+if [[ ! -f "$INPUT_FILE" ]]; then
+  echo "Input file not found: $INPUT_FILE" >&2
+  exit 1
+fi
+
+mkdir -p "$(dirname "$OUTPUT_FILE")"
 
 # Run Pandoc with the single-column, professional whitepaper configuration
 pandoc "$INPUT_FILE" \
