@@ -148,6 +148,44 @@ progress_bar $! "🔥 Stress-Testing Silicon Data Plane Bridge (30s)..." 31 /tmp
 sudo chown "$USER":"$USER" fuse.json 2>/dev/null || true
 chmod 644 fuse.json 2>/dev/null || true
 
+# ─────────────────────────────────────────────────────────
+# STAGE 3: LD_PRELOAD Interception Bridge (Measured)
+# ─────────────────────────────────────────────────────────
+PRELOAD_LIB="./build/libdataplane_intercept.so"
+PRELOAD_MOUNT="${DATAPLANE_MOUNT_PREFIX:-/mnt/dataplane}"
+
+maybe_clear
+
+if [ -f "$PRELOAD_LIB" ]; then
+    echo ""
+    echo "🚀 STAGE 3: Benchmarking LD_PRELOAD SqCq Bridge at QD=128..."
+    echo "📄 Preload log: /tmp/arm_neoverse_preload.log"
+    : > preload.json
+
+    # fio writes to a path under the dataplane mount prefix, which the
+    # intercept library's open() trampoline routes to a fake FD backed
+    # by a per-thread SqCqEmulator (no kernel, no FUSE).
+    # --thread: required because SqCqEmulator device threads don't survive fork.
+    # --ioengine=psync: exercises our pread/pwrite trampolines directly.
+    # --time_based: ensures the full 30s runtime regardless of file coverage.
+    sudo mkdir -p "$PRELOAD_MOUNT" 2>/dev/null || true
+    ( env LD_PRELOAD="$PRELOAD_LIB" DATAPLANE_MOUNT_PREFIX="$PRELOAD_MOUNT" \
+        fio --name=preload --filename="${PRELOAD_MOUNT}/nvme_raw_0" \
+            --rw=randrw --bs=4k --size=64M --ioengine=psync --iodepth=1 \
+            --runtime=30 --time_based --thread --group_reporting \
+            --output-format=json --output=preload.json \
+        > /tmp/arm_neoverse_preload.log 2>&1 ) &
+    progress_bar $! "🔥 Stress-Testing LD_PRELOAD SqCq Bridge (30s)..." 31 /tmp/arm_neoverse_preload.log
+    sudo chown "$USER":"$USER" preload.json 2>/dev/null || true
+    chmod 644 preload.json 2>/dev/null || true
+
+    PRELOAD_STAGE="ok"
+else
+    echo ""
+    echo "⚠️  STAGE 3 SKIPPED: $PRELOAD_LIB not found (build with: make dataplane-intercept)"
+    PRELOAD_STAGE="skip"
+fi
+
 if [ ! -s x.json ]; then
     echo "Expected baseline results file x.json was not found or is empty."
     exit 1
@@ -183,6 +221,21 @@ FL=$(echo "$JF" | jq -r '((.jobs[0].read.clat_ns.mean//0)+(.jobs[0].write.clat_n
 FI=$(echo "$JF" | jq -r '(.jobs[0].read.iops//0)+(.jobs[0].write.iops//0)' | awk '{v=$1} END {printf "%.0f", v+0}')
 FC=$(echo "$JF" | jq -r '(.jobs[0].usr_cpu//0)+(.jobs[0].sys_cpu//0)' | awk '{v=$1} END {printf "%.1f%%", v+0}')
 FS=$(echo "$JF" | jq -r '(.jobs[0].ctx//0)' | awk '{v=$1} END {print v+0}')
+
+# LD_PRELOAD metrics (measured, or N/A if skipped)
+LL="N/A"; LI="N/A"; LC="N/A"; LS="N/A"
+if [ "${PRELOAD_STAGE:-skip}" = "ok" ] && [ -s preload.json ]; then
+    JP=$(sed -n '/^{/,$p' preload.json 2>/dev/null || echo "{}")
+    PERR=$(echo "$JP" | jq -r '(.jobs[0].error//0)' | awk '{print int($1+0)}')
+    if [ "$PERR" -eq 0 ]; then
+        LL=$(echo "$JP" | jq -r '((.jobs[0].read.clat_ns.mean//0)+(.jobs[0].write.clat_ns.mean//0))/2000' | awk '{v=$1} END {printf "%.2f", v+0}')
+        LI=$(echo "$JP" | jq -r '(.jobs[0].read.iops//0)+(.jobs[0].write.iops//0)' | awk '{v=$1} END {printf "%.0f", v+0}')
+        LC=$(echo "$JP" | jq -r '(.jobs[0].usr_cpu//0)+(.jobs[0].sys_cpu//0)' | awk '{v=$1} END {printf "%.1f%%", v+0}')
+        LS=$(echo "$JP" | jq -r '(.jobs[0].ctx//0)' | awk '{v=$1} END {print v+0}')
+    else
+        echo "LD_PRELOAD fio failed with error code: $PERR"
+    fi
+fi
 
 PL=$(echo "scale=2; $FL * 0.65" | bc); PI=$(echo "$FI * 1.55" | bc | awk '{printf "%.0f", $0}')
 E="$ENGINE_PID_INPUT"
@@ -272,19 +325,30 @@ if [ -n "$DISK_CTRL" ]; then
     fi
     echo "  Target Drive: $DISK_CTRL"
 fi
-echo "=========================================================================="
-printf "%-25s | %-12s | %-12s\n" "Architecture" "Latency (us)" "IOPS"
-echo "--------------------------------------------------------------------------"
-printf "%-25s | %-12s | %-12s\n" "1. Legacy Kernel" "$XL" "$XI"
-printf "%-25s | %-12s | %-12s\n" "2. User-Space Bridge" "$FL" "$FI"
-printf "%-25s | %-12s | %-12s\n" "3. Zero-Copy (Bypass)" "$PL" "$PI"
-echo "=========================================================================="
-printf "%-20s | %-14s | %-14s | %-14s\n" "Metric" "Legacy Path" "Bridge Path" "Bypass Path"
-echo "--------------------------------------------------------------------------"
-printf "%-20s | %-14s | %-14s | %-14s\n" "Max CPU (Core 0)" "$XC" "$FC" "100.0%"
-printf "%-20s | %-14s | %-14s | %-14s\n" "Context Switches" "$XS" "$FS" "$CC"
-printf "%-20s | %-14s | %-14s | %-14s\n" "Memory Model" "Strong/Syscall" "FUSE/Copy" "Relaxed/Lock-Free"
-echo "=========================================================================="
-echo -e "\e[1;32m🎯 ARCHITECTURAL INSIGHT:\e[0m"
-echo -e "   The Bypass path required only \e[1;33m$CC\e[0m context switches, compared to \e[1;31m$XS\e[0m using the kernel."
-echo -e "   This \e[1m100% user-space polling model\e[0m completely eliminates OS interrupt latency and overhead."
+echo "================================================================================================="
+printf "%-25s | %-14s | %-14s | %-10s\n" "Architecture" "Latency (µs)" "IOPS" "Source"
+echo "-------------------------------------------------------------------------------------------------"
+printf "%-25s | %-14s | %-14s | %-10s\n" "1. Legacy Kernel" "$XL" "$XI" "fio"
+printf "%-25s | %-14s | %-14s | %-10s\n" "2. User-Space (FUSE)" "$FL" "$FI" "fio"
+if [ "${PRELOAD_STAGE:-skip}" = "ok" ] && [ "$LL" != "N/A" ]; then
+    printf "%-25s | %-14s | %-14s | %-10s\n" "3. LD_PRELOAD (SqCq)" "$LL" "$LI" "fio"
+else
+    printf "%-25s | %-14s | %-14s | %-10s\n" "3. LD_PRELOAD (SqCq)" "skipped" "skipped" "-"
+fi
+printf "%-25s | %-14s | %-14s | %-10s\n" "4. PCIe Bypass (proj)" "$PL" "$PI" "extrap."
+echo "================================================================================================="
+printf "%-22s | %-14s | %-14s | %-14s | %-14s\n" "Metric" "Kernel" "FUSE Bridge" "LD_PRELOAD" "PCIe Bypass"
+echo "-------------------------------------------------------------------------------------------------"
+printf "%-22s | %-14s | %-14s | %-14s | %-14s\n" "Max CPU" "$XC" "$FC" "$LC" "100.0%"
+printf "%-22s | %-14s | %-14s | %-14s | %-14s\n" "Context Switches" "$XS" "$FS" "$LS" "$CC"
+printf "%-22s | %-14s | %-14s | %-14s | %-14s\n" "Memory Model" "Strong/Syscall" "FUSE/Copy" "SqCq/Lock-Free" "Relaxed/Poll"
+echo "================================================================================================="
+if [ "${PRELOAD_STAGE:-skip}" = "ok" ] && [ "$LS" != "N/A" ]; then
+    echo -e "\e[1;32m🎯 ARCHITECTURAL INSIGHT:\e[0m"
+    echo -e "   LD_PRELOAD path: \e[1;33m$LI\e[0m IOPS with \e[1;33m$LS\e[0m ctx switches (vs \e[1;31m$XS\e[0m kernel)."
+    echo -e "   The SqCq bridge bypasses FUSE + VFS, routing pread/pwrite directly to NVMe-style queues."
+else
+    echo -e "\e[1;32m🎯 ARCHITECTURAL INSIGHT:\e[0m"
+    echo -e "   The Bypass path required only \e[1;33m$CC\e[0m context switches, compared to \e[1;31m$XS\e[0m using the kernel."
+    echo -e "   This \e[1m100% user-space polling model\e[0m completely eliminates OS interrupt latency and overhead."
+fi

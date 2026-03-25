@@ -136,7 +136,7 @@ fi
 
 # Clean up only demo-related processes and mounts.
 sudo pkill -9 -x dataplane-emu 2>/dev/null || true
-sudo pkill -f 'fio --name=base|fio --name=fuse' 2>/dev/null || true
+sudo pkill -f 'fio --name=base|fio --name=fuse|fio --name=preload' 2>/dev/null || true
 sudo umount -l "$C" "$X" 2>/dev/null || true
 sudo mkdir -p "$C" "$X"
 

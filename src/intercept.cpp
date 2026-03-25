@@ -490,4 +490,35 @@ int open64(const char* path, int flags, ...) {
     return open(path, flags, mode);
 }
 
+// fsync/fdatasync — no-op for fake FDs (in-memory emulation has no durability).
+int fsync(int fd) {
+    if (g_fd_table.lookup(fd))
+        return 0;
+    using fsync_fn_t = int (*)(int);
+    static auto real_fsync = reinterpret_cast<fsync_fn_t>(dlsym(RTLD_NEXT, "fsync"));
+    return real_fsync ? real_fsync(fd) : 0;
+}
+
+int fdatasync(int fd) {
+    if (g_fd_table.lookup(fd))
+        return 0;
+    using fdatasync_fn_t = int (*)(int);
+    static auto real_fdatasync = reinterpret_cast<fdatasync_fn_t>(dlsym(RTLD_NEXT, "fdatasync"));
+    return real_fdatasync ? real_fdatasync(fd) : 0;
+}
+
+// posix_fadvise — no-op for fake FDs (prevents fio "cache invalidation" EBADF).
+int posix_fadvise(int fd, off_t offset, off_t len, int advice) {
+    (void)offset; (void)len; (void)advice;
+    if (g_fd_table.lookup(fd))
+        return 0;
+    using fadvise_fn_t = int (*)(int, off_t, off_t, int);
+    static auto real_fadvise = reinterpret_cast<fadvise_fn_t>(dlsym(RTLD_NEXT, "posix_fadvise"));
+    return real_fadvise ? real_fadvise(fd, offset, len, advice) : 0;
+}
+
+int posix_fadvise64(int fd, off_t offset, off_t len, int advice) {
+    return posix_fadvise(fd, offset, len, advice);
+}
+
 } // extern "C"
