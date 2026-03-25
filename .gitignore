@@ -54,3 +54,9 @@ spdk/
 .env
 scripts/spdk-aws/.env
 *.json
+
+# local/private state
+.aws/
+*.pem
+*.key
+scripts/spdk-aws/AWS_AUTOMATION_FINDINGS_*.md
