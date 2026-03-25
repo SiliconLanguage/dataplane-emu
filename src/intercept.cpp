@@ -18,14 +18,84 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <thread>
 #include <sys/mman.h>
 #include <sys/syscall.h>
+#include <sys/stat.h>
+#include <sched.h>
 
 namespace dataplane_intercept {
 
 // =========================================================================
-// §5  Library Lifecycle
+// Telemetry (sampled — matches FUSE bridge contract)
 // =========================================================================
+
+static constexpr uint32_t LOG_NTH = 1500;
+
+// =========================================================================
+// §5  Engine Polling Thread
+// =========================================================================
+
+void EngineContext::poll_loop() noexcept {
+    while (running.load(std::memory_order_relaxed)) {
+        bool did_work = false;
+        const size_t n = ring_count.load(std::memory_order_acquire);
+        for (size_t i = 0; i < n; ++i) {
+            IorRing* ring = rings[i].load(std::memory_order_acquire);
+            if (!ring) continue;
+
+            IorEntry* entry = ring->poll();
+            if (!entry) continue;
+            did_work = true;
+
+            // Mock engine: replicate FUSE bridge behaviour.
+            switch (entry->opcode) {
+            case IorEntry::Op::READ:
+                // Fill caller buffer with pattern data (same as FUSE memset 'A').
+                std::memset(entry->user_buf, 'A', entry->length);
+                entry->result = static_cast<ssize_t>(entry->length);
+                break;
+            case IorEntry::Op::WRITE:
+                // Accept write (no-op sink, same as FUSE).
+                entry->result = static_cast<ssize_t>(entry->length);
+                break;
+            case IorEntry::Op::FSYNC:
+                entry->result = 0;
+                break;
+            }
+
+            // Signal completion — release ensures result is visible.
+            entry->ready.store(true, std::memory_order_release);
+        }
+
+        if (!did_work) {
+            // Friendly yield — avoid burning a core when idle.
+#if defined(__aarch64__)
+            __asm__ volatile("yield" ::: "memory");
+#else
+            __builtin_ia32_pause();
+#endif
+        }
+    }
+}
+
+/// Thread-local SPSC ring + lazy registration.
+static thread_local IorRing tl_ring{};
+static thread_local bool    tl_ring_registered = false;
+
+IorRing* dp_get_thread_ring() noexcept {
+    if (!tl_ring_registered) {
+        g_engine.register_ring(&tl_ring);
+        tl_ring_registered = true;
+    }
+    return &tl_ring;
+}
+
+// =========================================================================
+// §6  Library Lifecycle
+// =========================================================================
+
+static std::thread g_engine_thread;
 
 void dp_init_trampolines() noexcept {
     g_trampoline.real_open     = reinterpret_cast<open_fn_t>(dlsym(RTLD_NEXT, "open"));
@@ -36,10 +106,19 @@ void dp_init_trampolines() noexcept {
     g_trampoline.real_write    = reinterpret_cast<write_fn_t>(dlsym(RTLD_NEXT, "write"));
     g_trampoline.real_memcpy   = reinterpret_cast<memcpy_fn_t>(dlsym(RTLD_NEXT, "memcpy"));
     g_trampoline.real_memmove  = reinterpret_cast<memmove_fn_t>(dlsym(RTLD_NEXT, "memmove"));
+
+    // Start the engine polling thread.
+    g_engine.running.store(true, std::memory_order_release);
+    g_engine_thread = std::thread([] { g_engine.poll_loop(); });
 }
 
 void dp_fini() noexcept {
-    // Release any remaining open fake FDs.
+    // Stop engine thread.
+    g_engine.running.store(false, std::memory_order_release);
+    if (g_engine_thread.joinable())
+        g_engine_thread.join();
+
+    // Release remaining fake FDs.
     for (size_t i = 0; i < FAKE_FD_COUNT; ++i) {
         auto& e = g_fd_table.slots[i].entry;
         if (e.state.load(std::memory_order_relaxed) == FakeFdEntry::State::OPEN)
@@ -77,6 +156,7 @@ int FakeFdTable::alloc(uint64_t engine_handle, uint64_t file_size, uint32_t flag
             e.engine_handle = engine_handle;
             e.file_size     = file_size;
             e.flags         = flags;
+            e.file_pos.store(0, std::memory_order_relaxed);
             return static_cast<int>(i) + FAKE_FD_BASE;
         }
     }
@@ -152,7 +232,6 @@ bool ElisionTracker::track(void* dst, const void* src, size_t len) noexcept {
     e.bytes_faulted = 0;
     e.bailed_out    = false;
     ++count;
-    // Register destination range for fault interception.
     uffd_ctx.register_range(dst, len);
     return true;
 }
@@ -178,11 +257,9 @@ int ElisionTracker::handle_fault(void* fault_addr) noexcept {
     size_t copy_len = (page_offset + page_size <= e->length)
                     ? page_size : (e->length - page_offset);
 
-    // Perform the lazy copy for this page.
     auto src_page = reinterpret_cast<const char*>(e->src) + page_offset;
     auto dst_page = reinterpret_cast<char*>(e->dst) + page_offset;
 
-    // Use UFFDIO_COPY to resolve the fault.
     struct uffdio_copy uc{};
     uc.dst  = reinterpret_cast<uintptr_t>(dst_page);
     uc.src  = reinterpret_cast<uintptr_t>(src_page);
@@ -194,6 +271,45 @@ int ElisionTracker::handle_fault(void* fault_addr) noexcept {
     e->bytes_faulted += copy_len;
     e->should_bailout();
     return 0;
+}
+
+// =========================================================================
+// Helper: submit an IorEntry and spin-wait for completion
+// =========================================================================
+
+static ssize_t dp_submit_and_wait(IorEntry::Op op, int fake_fd,
+                                  void* buf, size_t len, off_t offset) noexcept {
+    IorRing* ring = dp_get_thread_ring();
+
+    // Stack-allocated entry — no heap on the hot path.
+    IorEntry entry{};
+    entry.opcode   = op;
+    entry.fake_fd  = fake_fd;
+    entry.offset   = static_cast<uint64_t>(offset);
+    entry.length   = static_cast<uint32_t>(len);
+    entry.user_buf = buf;
+    entry.ready.store(false, std::memory_order_relaxed);
+    entry.result   = 0;
+
+    // Submit to the per-thread ring. Spin-retry if full.
+    while (!ring->submit(&entry)) {
+#if defined(__aarch64__)
+        __asm__ volatile("yield" ::: "memory");
+#else
+        __builtin_ia32_pause();
+#endif
+    }
+
+    // Spin-wait for the engine to complete the entry.
+    while (!entry.ready.load(std::memory_order_acquire)) {
+#if defined(__aarch64__)
+        __asm__ volatile("yield" ::: "memory");
+#else
+        __builtin_ia32_pause();
+#endif
+    }
+
+    return entry.result;
 }
 
 } // namespace dataplane_intercept
@@ -216,8 +332,10 @@ static void dp_lib_fini() {
     dp_fini();
 }
 
+// Mock file size matching the FUSE bridge's /nvme_raw_0 (1 GB).
+static constexpr uint64_t MOCK_FILE_SIZE = 1024ULL * 1024 * 1024;
+
 int open(const char* path, int flags, ...) {
-    // Extract optional mode argument.
     mode_t mode = 0;
     if (flags & O_CREAT) {
         va_list ap;
@@ -229,9 +347,14 @@ int open(const char* path, int flags, ...) {
     if (!dp_is_dataplane_path(path))
         return g_trampoline.real_open(path, flags, mode);
 
-    // TODO: submit engine open command via IorRing, receive engine_handle.
-    // For now, fall through to libc to allow incremental bring-up.
-    return g_trampoline.real_open(path, flags, mode);
+    // Mint a fake FD — engine_handle 0 for mock mode.
+    int fd = g_fd_table.alloc(/*engine_handle=*/0, MOCK_FILE_SIZE,
+                              static_cast<uint32_t>(flags));
+    if (fd < 0) {
+        errno = ENFILE;
+        return -1;
+    }
+    return fd;
 }
 
 int close(int fd) {
@@ -247,10 +370,22 @@ ssize_t pread(int fd, void* buf, size_t count, off_t offset) {
     if (!e)
         return g_trampoline.real_pread(fd, buf, count, offset);
 
-    // TODO: submit IorEntry to per-thread IorRing, spin on entry.ready.
-    // Placeholder: return error until engine integration is wired.
-    errno = ENOSYS;
-    return -1;
+    // Clamp to file size.
+    if (static_cast<uint64_t>(offset) >= e->file_size)
+        return 0;
+    uint64_t avail = e->file_size - static_cast<uint64_t>(offset);
+    if (count > avail) count = static_cast<size_t>(avail);
+
+    // Sampled telemetry (matches FUSE STDOUT_LOG_NTH cadence).
+    static thread_local uint32_t log_ctr = 0;
+    if (__builtin_expect(++log_ctr >= LOG_NTH, 0)) {
+        std::fprintf(stderr, "[LD_PRELOAD -> IorRing] READ  fd:%d | size:%zu | offset:%lld\n",
+                     fd, count, static_cast<long long>(offset));
+        log_ctr = 0;
+    }
+
+    return dp_submit_and_wait(IorEntry::Op::READ, fd,
+                              buf, count, offset);
 }
 
 ssize_t pwrite(int fd, const void* buf, size_t count, off_t offset) {
@@ -258,27 +393,44 @@ ssize_t pwrite(int fd, const void* buf, size_t count, off_t offset) {
     if (!e)
         return g_trampoline.real_pwrite(fd, buf, count, offset);
 
-    // TODO: submit IorEntry to per-thread IorRing, spin on entry.ready.
-    errno = ENOSYS;
-    return -1;
+    if (static_cast<uint64_t>(offset) >= e->file_size)
+        return 0;
+    uint64_t avail = e->file_size - static_cast<uint64_t>(offset);
+    if (count > avail) count = static_cast<size_t>(avail);
+
+    static thread_local uint32_t log_ctr = 0;
+    if (__builtin_expect(++log_ctr >= LOG_NTH, 0)) {
+        std::fprintf(stderr, "[LD_PRELOAD -> IorRing] WRITE fd:%d | size:%zu | offset:%lld\n",
+                     fd, count, static_cast<long long>(offset));
+        log_ctr = 0;
+    }
+
+    return dp_submit_and_wait(IorEntry::Op::WRITE, fd,
+                              const_cast<void*>(buf), count, offset);
 }
 
 ssize_t read(int fd, void* buf, size_t count) {
-    if (!g_fd_table.lookup(fd))
+    FakeFdEntry* e = g_fd_table.lookup(fd);
+    if (!e)
         return g_trampoline.real_read(fd, buf, count);
 
-    // TODO: track file position per fake FD and delegate to pread path.
-    errno = ENOSYS;
-    return -1;
+    off_t pos = e->file_pos.load(std::memory_order_relaxed);
+    ssize_t n = pread(fd, buf, count, pos);
+    if (n > 0)
+        e->file_pos.fetch_add(n, std::memory_order_relaxed);
+    return n;
 }
 
 ssize_t write(int fd, const void* buf, size_t count) {
-    if (!g_fd_table.lookup(fd))
+    FakeFdEntry* e = g_fd_table.lookup(fd);
+    if (!e)
         return g_trampoline.real_write(fd, buf, count);
 
-    // TODO: track file position per fake FD and delegate to pwrite path.
-    errno = ENOSYS;
-    return -1;
+    off_t pos = e->file_pos.load(std::memory_order_relaxed);
+    ssize_t n = pwrite(fd, buf, count, pos);
+    if (n > 0)
+        e->file_pos.fetch_add(n, std::memory_order_relaxed);
+    return n;
 }
 
 } // extern "C"

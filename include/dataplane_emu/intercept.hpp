@@ -94,6 +94,7 @@ struct FakeFdEntry {
     uint64_t           engine_handle;   // opaque handle from the dataplane engine
     uint64_t           file_size;       // cached file size for range checks
     uint32_t           flags;           // O_RDONLY / O_WRONLY / O_RDWR etc.
+    std::atomic<off_t> file_pos{0};     // current position for read()/write()
 };
 
 /// Wrap FakeFdEntry in a cache-line-aligned slot to prevent false sharing.
@@ -249,7 +250,44 @@ struct ElisionTracker {
 };
 
 // =========================================================================
-// §5  Library Lifecycle
+// §5  Engine Polling Thread & Per-Thread Ring Registry
+// =========================================================================
+//
+// Each application thread that calls pread/pwrite gets a thread_local IorRing.
+// Rings are registered with the global engine context so the polling thread
+// can drain them.  The engine completes requests with mock data (memset 'A'
+// for reads, no-op for writes) — matching the FUSE bridge contract.
+
+inline constexpr size_t MAX_RINGS = 128;
+
+struct EngineContext {
+    std::array<std::atomic<IorRing*>, MAX_RINGS> rings{};
+    std::atomic<size_t> ring_count{0};
+    std::atomic<bool>   running{false};
+
+    /// Register a per-thread ring.  Returns slot index or -1 on overflow.
+    int register_ring(IorRing* ring) noexcept {
+        size_t idx = ring_count.fetch_add(1, std::memory_order_acq_rel);
+        if (idx >= MAX_RINGS) {
+            ring_count.fetch_sub(1, std::memory_order_relaxed);
+            return -1;
+        }
+        rings[idx].store(ring, std::memory_order_release);
+        return static_cast<int>(idx);
+    }
+
+    /// Engine polling loop — runs in a dedicated thread.
+    void poll_loop() noexcept;
+};
+
+/// Global engine context — started at library init.
+inline EngineContext g_engine{};
+
+/// Get (or create) the calling thread's IorRing.
+IorRing* dp_get_thread_ring() noexcept;
+
+// =========================================================================
+// §6  Library Lifecycle
 // =========================================================================
 
 /// Resolve all dlsym trampolines.  Called from __attribute__((constructor)).

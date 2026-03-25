@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.15)
 project(dataplane-emu CXX C)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
 # --- Explicit Silicon-Specific Optimization Mapping ---
@@ -68,3 +68,14 @@ target_link_libraries(dataplane-emu PRIVATE project_options ${FUSE3_LIBRARIES} p
 # --- Target: Ring Test ---
 add_executable(dataplane-ring-test src/dataplane_ring.cpp)
 target_link_libraries(dataplane-ring-test PRIVATE project_options pthread)
+
+# --- Target: LD_PRELOAD Interception Library ---
+add_library(dataplane-intercept SHARED src/intercept.cpp)
+target_include_directories(dataplane-intercept PRIVATE include)
+target_compile_definitions(dataplane-intercept PRIVATE _GNU_SOURCE _FILE_OFFSET_BITS=64)
+target_compile_options(dataplane-intercept PRIVATE -O3 ${CPU_FLAGS} -fPIC)
+target_link_libraries(dataplane-intercept PRIVATE dl pthread)
+set_target_properties(dataplane-intercept PROPERTIES
+    OUTPUT_NAME "dataplane_intercept"
+    PREFIX "lib"
+)
