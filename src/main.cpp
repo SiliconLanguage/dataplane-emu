@@ -45,6 +45,12 @@
 // Reverting to global mountpoint for the signal handler to access
 static std::string global_mountpoint = "/mnt/virtual_nvme";
 
+// Owned mutable copy for async-signal-safe execv() in the signal handler.
+// c_str() returns const char* — casting that away for execv is UB if the
+// runtime places the string in read-only pages.  We keep a separate char[]
+// that is guaranteed mutable and survives for the lifetime of the process.
+static char sig_mountpoint[4096];
+
 // Signal handler that cleans up and exits immediately
 /**
  * CLEAN ROOM SIGNAL HANDLER PATTERN
@@ -71,11 +77,16 @@ void signal_handler(int sig) {
         /* * STEP 2: execv() - Replace Child with Cleanup Utility
          * We replace the child process with /usr/bin/fusermount3. 
          * This avoids any further C++ library overhead or heap usage.
+         *
+         * sig_mountpoint is a static char[] — always mutable, always
+         * valid, never involves heap or std::string internals.
          */
+        char fusermount_bin[] = "/usr/bin/fusermount3";
+        char flag_u[]         = "-u";
         char* const args[] = {
-            (char*)"/usr/bin/fusermount3", 
-            (char*)"-u", 
-            (char*)global_mountpoint.c_str(), 
+            fusermount_bin,
+            flag_u,
+            sig_mountpoint,
             nullptr
         };
         
@@ -114,6 +125,7 @@ int main(int argc, char* argv[]) {
             case 'm':
                 global_mountpoint = optarg;
                 break;
+            // sig_mountpoint sync is done once below after all opts are parsed
             case 'd':
                 blk_device_path = optarg;
                 break;
@@ -137,6 +149,17 @@ int main(int argc, char* argv[]) {
                              "(auto-detects AWS/Azure)\n";
                 return 1;
         }
+    }
+
+    // Sync the mutable signal-handler buffer from the (possibly updated)
+    // global_mountpoint.  Must happen after option parsing, before signal
+    // registration, and the memcpy length is clamped to the buffer size.
+    {
+        size_t len = global_mountpoint.size();
+        if (len >= sizeof(sig_mountpoint))
+            len = sizeof(sig_mountpoint) - 1;
+        std::memcpy(sig_mountpoint, global_mountpoint.data(), len);
+        sig_mountpoint[len] = '\0';
     }
 
     std::signal(SIGINT, signal_handler);

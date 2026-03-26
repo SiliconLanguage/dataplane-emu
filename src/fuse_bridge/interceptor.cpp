@@ -138,17 +138,13 @@ static int dp_read(const char *path, char *buf, size_t size, off_t offset, struc
     FuseBridgeCtx* ctx = get_ctx();
     int fd = ctx ? ctx->blk_fd : -1;
 
-    if (fd >= 0) {
-        // Real device I/O path: pread against the raw block device
-        ssize_t ret = pread(fd, buf, size, offset);
-        if (ret < 0)
-            return -errno;
-        return static_cast<int>(ret);
-    }
+    if (fd < 0)
+        return -EIO;
 
-    // Fallback: memset (no device attached)
-    memset(buf, 'A', size);
-    return size;
+    ssize_t ret = pread(fd, buf, size, offset);
+    if (ret < 0)
+        return -errno;
+    return static_cast<int>(ret);
 }
 
 static int dp_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
@@ -158,16 +154,13 @@ static int dp_write(const char *path, const char *buf, size_t size, off_t offset
     FuseBridgeCtx* ctx = get_ctx();
     int fd = ctx ? ctx->blk_fd : -1;
 
-    if (fd >= 0) {
-        // Real device I/O path: pwrite against the raw block device
-        ssize_t ret = pwrite(fd, buf, size, offset);
-        if (ret < 0)
-            return -errno;
-        return static_cast<int>(ret);
-    }
+    if (fd < 0)
+        return -EIO;
 
-    // Fallback: discard (no device attached)
-    return size;
+    ssize_t ret = pwrite(fd, buf, size, offset);
+    if (ret < 0)
+        return -errno;
+    return static_cast<int>(ret);
 }
 
 // Intercepts file deletion (unlink) - required by fio to clear test files

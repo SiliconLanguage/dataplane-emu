@@ -44,24 +44,53 @@ done
 # =========================================================================
 install_build_deps() {
     echo "[Build] Checking build dependencies..."
-    local pkgs_needed=()
 
-    # Core build deps
-    dpkg -s build-essential  &>/dev/null || pkgs_needed+=(build-essential)
-    dpkg -s pkg-config       &>/dev/null || pkgs_needed+=(pkg-config)
-    dpkg -s libfuse3-dev     &>/dev/null || pkgs_needed+=(libfuse3-dev)
-    dpkg -s libnuma-dev      &>/dev/null || pkgs_needed+=(libnuma-dev)
-    dpkg -s uuid-dev         &>/dev/null || pkgs_needed+=(uuid-dev)
-    dpkg -s libssl-dev       &>/dev/null || pkgs_needed+=(libssl-dev)
-    dpkg -s libaio-dev       &>/dev/null || pkgs_needed+=(libaio-dev)
-    dpkg -s liburing-dev     &>/dev/null || pkgs_needed+=(liburing-dev)
+    if command -v dnf &>/dev/null; then
+        # Amazon Linux 2023 / RHEL / Fedora
+        local pkgs_needed=()
+        rpm -q gcc-c++        &>/dev/null || pkgs_needed+=(gcc-c++)
+        rpm -q make            &>/dev/null || pkgs_needed+=(make)
+        rpm -q cmake           &>/dev/null || pkgs_needed+=(cmake)
+        rpm -q pkgconfig       &>/dev/null || pkgs_needed+=(pkgconfig)
+        rpm -q fuse3-devel     &>/dev/null || pkgs_needed+=(fuse3-devel)
+        rpm -q numactl-devel   &>/dev/null || pkgs_needed+=(numactl-devel)
+        rpm -q libuuid-devel   &>/dev/null || pkgs_needed+=(libuuid-devel)
+        rpm -q openssl-devel   &>/dev/null || pkgs_needed+=(openssl-devel)
+        rpm -q libaio-devel    &>/dev/null || pkgs_needed+=(libaio-devel)
+        rpm -q liburing-devel  &>/dev/null || pkgs_needed+=(liburing-devel)
+        rpm -q jq              &>/dev/null || pkgs_needed+=(jq)
+        rpm -q fio             &>/dev/null || pkgs_needed+=(fio)
 
-    if [ ${#pkgs_needed[@]} -gt 0 ]; then
-        echo "[Build] Installing missing packages: ${pkgs_needed[*]}"
-        sudo apt-get update -qq
-        sudo apt-get install -y -qq "${pkgs_needed[@]}"
+        if [ ${#pkgs_needed[@]} -gt 0 ]; then
+            echo "[Build] Installing missing packages: ${pkgs_needed[*]}"
+            sudo dnf install -y "${pkgs_needed[@]}"
+        else
+            echo "[Build] All build dependencies satisfied"
+        fi
+
+    elif command -v apt-get &>/dev/null; then
+        # Debian / Ubuntu
+        local pkgs_needed=()
+        dpkg -s build-essential  &>/dev/null || pkgs_needed+=(build-essential)
+        dpkg -s pkg-config       &>/dev/null || pkgs_needed+=(pkg-config)
+        dpkg -s libfuse3-dev     &>/dev/null || pkgs_needed+=(libfuse3-dev)
+        dpkg -s libnuma-dev      &>/dev/null || pkgs_needed+=(libnuma-dev)
+        dpkg -s uuid-dev         &>/dev/null || pkgs_needed+=(uuid-dev)
+        dpkg -s libssl-dev       &>/dev/null || pkgs_needed+=(libssl-dev)
+        dpkg -s libaio-dev       &>/dev/null || pkgs_needed+=(libaio-dev)
+        dpkg -s liburing-dev     &>/dev/null || pkgs_needed+=(liburing-dev)
+
+        if [ ${#pkgs_needed[@]} -gt 0 ]; then
+            echo "[Build] Installing missing packages: ${pkgs_needed[*]}"
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq "${pkgs_needed[@]}"
+        else
+            echo "[Build] All build dependencies satisfied"
+        fi
+
     else
-        echo "[Build] All build dependencies satisfied"
+        echo "[Build] WARNING: Unknown package manager — skipping dependency install"
+        echo "  Ensure gcc-c++, cmake, fuse3-devel, numactl-devel, libaio-devel are installed"
     fi
 }
 
@@ -118,7 +147,9 @@ ensure_dataplane_emu() {
 
 if [ "$SKIP_BUILD" != "1" ]; then
     install_build_deps
-    ensure_spdk_uring
+    # ensure_spdk_uring is best-effort — SPDK may not be cloned yet.
+    # Stage 3 will fail-fast later if bdevperf is unavailable.
+    ensure_spdk_uring || echo "[Build] SPDK not available — Stage 3 will require manual SPDK setup"
     ensure_dataplane_emu
 fi
 
@@ -228,8 +259,9 @@ for candidate in "./spdk/scripts/setup.sh" "./spdk-azure/scripts/setup.sh" "./sp
     fi
 done
 if [ -z "$SPDK_SETUP" ]; then
-    echo "Missing SPDK setup script. Checked: ./spdk/scripts/setup.sh, ./spdk-azure/scripts/setup.sh, ./spdk-aws/scripts/setup.sh"
-    exit 1
+    echo "[WARN] SPDK setup script not found — Stages 1 & 2 will run without SPDK."
+    echo "       Stage 3 (bdevperf) will be skipped unless SPDK is cloned."
+    echo "       Checked: ./spdk/scripts/setup.sh, ./spdk-azure/scripts/setup.sh, ./spdk-aws/scripts/setup.sh"
 fi
 
 locate_bdevperf() {
@@ -248,7 +280,7 @@ if [ -z "$BDEVPERF_BIN" ]; then
     BDEVPERF_BIN="$(locate_bdevperf || true)"
 fi
 if [ -z "$BDEVPERF_BIN" ]; then
-    if [ "${DEMO_AUTOBUILD_BDEVPERF:-1}" = "1" ]; then
+    if [ "${DEMO_AUTOBUILD_BDEVPERF:-1}" = "1" ] && [ -d "./spdk" ]; then
         echo "bdevperf not found, attempting auto-build..."
         : > "$BUILD_LOG"
         JOBS="$(command -v nproc >/dev/null 2>&1 && nproc || echo 4)"
@@ -260,10 +292,8 @@ if [ -z "$BDEVPERF_BIN" ]; then
     fi
 
     if [ -z "$BDEVPERF_BIN" ]; then
-        echo "Missing bdevperf binary after auto-build attempt."
-        echo "Set DEMO_BDEVPERF_BIN=/absolute/path/to/bdevperf"
-        echo "Build log: $BUILD_LOG"
-        exit 1
+        echo "[WARN] bdevperf binary not found — Stage 3 will be skipped."
+        echo "       To enable: clone SPDK, build it, then re-run."
     fi
 fi
 
@@ -377,9 +407,12 @@ for _qd in 1 "$IODEPTH_MID" "$IODEPTH"; do
     : > "fuse_qd${_qd}.json"
 done
 
-echo "[Stage 0] Sanitize and reset SPDK"
+echo "[Stage 0] Sanitize device"
 sudo wipefs -a "$D" >> "$BASE_LOG" 2>&1
-sudo -E bash "$SPDK_SETUP" reset >> "$SPDK_SETUP_LOG" 2>&1
+if [ -n "$SPDK_SETUP" ]; then
+    echo "[Stage 0] Resetting SPDK PCI bindings"
+    sudo -E bash "$SPDK_SETUP" reset >> "$SPDK_SETUP_LOG" 2>&1
+fi
 
 echo "[Stage 1] Kernel baseline fio (filesystem path)"
 if ! sudo mount "$D" "$X" >> "$BASE_LOG" 2>&1; then
@@ -397,7 +430,12 @@ done
 sudo umount -l "$X" >> "$BASE_LOG" 2>&1
 
 echo "[Stage 2] User-space bridge fio (strict readiness probe)"
-HUGEMEM=2048 sudo -E bash "$SPDK_SETUP" >> "$SPDK_SETUP_LOG" 2>&1
+# The FUSE bridge uses pread/pwrite against the raw block device directly;
+# hugepages are only needed for Stage 3 (SPDK).  Allocate them here only
+# if the SPDK setup script is available, otherwise proceed without.
+if [ -n "$SPDK_SETUP" ]; then
+    HUGEMEM=2048 sudo -E bash "$SPDK_SETUP" >> "$SPDK_SETUP_LOG" 2>&1
+fi
 sudo ./build/dataplane-emu -m "$C" -d "$D" -b -k > "$ENGINE_LOG" 2>&1 &
 ENGINE_PID=$!
 
@@ -463,7 +501,9 @@ if [ -n "${ENGINE_PID:-}" ]; then
 fi
 sudo pkill -9 -x dataplane-emu >/dev/null 2>&1 || true
 sudo umount -l "$C" >/dev/null 2>&1 || true
-sudo -E bash "$SPDK_SETUP" reset >> "$SPDK_SETUP_LOG" 2>&1
+if [ -n "$SPDK_SETUP" ]; then
+    sudo -E bash "$SPDK_SETUP" reset >> "$SPDK_SETUP_LOG" 2>&1
+fi
 
 # Wait for the NVMe block device to reappear after SPDK reset
 stage3_ready=0
@@ -481,97 +521,82 @@ fi
 
 
 # ---------------------------------------------------------------------------
-# Stage 3: SPDK bdevperf
+# Stage 3: SPDK bdevperf — STRICT vfio-pci PCIe bypass (no fallbacks)
 # ---------------------------------------------------------------------------
-# On Azure (no IOMMU groups), PCIe passthrough is blocked.  Use SPDK's
-# bdev_aio backend which runs the I/O through SPDK's lock-free reactor
-# framework while the kernel provides the AIO syscall layer.  If SPDK was
-# rebuilt with io_uring (ensure_spdk_uring above), bdev_uring is preferred.
-#
-# On AWS (IOMMU groups present), use the standard PCIe passthrough path.
+# AWS Graviton / Nitro: The NVMe device MUST be owned by vfio-pci.
+# No bdev_aio, no bdev_uring, no kernel AIO fallbacks.  If the preflight
+# check fails, we exit immediately rather than faking Stage 3 results.
 # ---------------------------------------------------------------------------
-HAS_IOMMU=0
-if [ -d /sys/kernel/iommu_groups ] && [ -n "$(ls -A /sys/kernel/iommu_groups 2>/dev/null)" ]; then
-    HAS_IOMMU=1
+
+# Gate: SPDK must be present for Stage 3
+if [ -z "$SPDK_SETUP" ] || [ -z "${BDEVPERF_BIN:-}" ]; then
+    echo ""
+    echo "════════════════════════════════════════════════════════════════"
+    echo "  Stage 3 SKIPPED — SPDK not available on this host"
+    echo "════════════════════════════════════════════════════════════════"
+    echo "  Stages 1 & 2 completed successfully."
+    echo "  To enable Stage 3 (PCIe bypass via bdevperf):"
+    echo "    1. git clone https://github.com/spdk/spdk.git --recursive"
+    echo "    2. sudo bash scripts/spdk-aws/setup_graviton_spdk.sh"
+    echo "    3. Re-run this demo"
+    echo "════════════════════════════════════════════════════════════════"
+
+    # Print the Stages 1+2 scorecard with N/A for Stage 3
+    BL="N/A"; BL_IOPS="N/A"; BM_LAT="N/A"; BM_IOPS="N/A"; BI="N/A"; BI_LAT="N/A"
+    STAGE3_LABEL="SKIPPED (SPDK not installed)"
+else
+
+echo "[Stage 3] Preflight: verifying vfio-pci ownership"
+
+# 3a. IOMMU groups — if not present, enable no-IOMMU mode (standard for EC2 Nitro)
+if [[ ! -d /sys/kernel/iommu_groups ]] || [[ -z "$(ls -A /sys/kernel/iommu_groups 2>/dev/null)" ]]; then
+    echo "  No IOMMU groups — enabling vfio no-IOMMU mode (standard for EC2 Nitro)"
+    echo 1 | sudo tee /sys/module/vfio/parameters/enable_unsafe_noiommu_mode >/dev/null 2>&1 || true
+else
+    echo "  IOMMU groups: present"
 fi
 
-if [ "$HAS_IOMMU" -eq 0 ]; then
-    # Auto-detect the device's logical sector size for bdev_aio
-    DEV_BLOCK_SIZE=$(sudo blockdev --getss "$D" 2>/dev/null || echo 512)
+# 3b. Ensure vfio-pci module is loaded
+if ! lsmod | grep -q vfio_pci; then
+    echo "  Loading vfio-pci kernel module..."
+    sudo modprobe vfio-pci
+fi
+if ! lsmod | grep -q vfio_pci; then
+    echo "FATAL: vfio-pci module could not be loaded."
+    exit 1
+fi
+echo "  vfio-pci module: loaded"
 
-    # Prefer bdev_uring if SPDK was built with io_uring support
-    SPDK_CONFIG_MK="./spdk/mk/config.mk"
-    USE_URING=0
-    if [ -f "$SPDK_CONFIG_MK" ] && grep -q 'CONFIG_URING?=y' "$SPDK_CONFIG_MK" 2>/dev/null; then
-        USE_URING=1
-    fi
+# 3c. Bind the NVMe device to vfio-pci (reuses ensure_userspace_stage3_driver)
+ensure_userspace_stage3_driver
 
-    if [ "$USE_URING" -eq 1 ]; then
-        echo "[Stage 3] Azure: SPDK bdevperf via bdev_uring (io_uring reactor path)"
-        BDEV_CFG="/tmp/arm_neoverse_bdevperf.json"
-        cat > "$BDEV_CFG" <<EOF
-{
-  "subsystems": [
-    {
-      "subsystem": "bdev",
-      "config": [
-        {
-          "method": "bdev_uring_create",
-          "params": {
-            "name": "UringNvme0",
-            "filename": "$D",
-            "block_size": $DEV_BLOCK_SIZE
-          }
-        }
-      ]
-    }
-  ]
-}
-EOF
-    else
-        echo "[Stage 3] Azure: SPDK bdevperf via bdev_aio (SPDK reactor + kernel AIO)"
-        BDEV_CFG="/tmp/arm_neoverse_bdevperf.json"
-        cat > "$BDEV_CFG" <<EOF
-{
-  "subsystems": [
-    {
-      "subsystem": "bdev",
-      "config": [
-        {
-          "method": "bdev_aio_create",
-          "params": {
-            "name": "AioNvme0",
-            "filename": "$D",
-            "block_size": $DEV_BLOCK_SIZE
-          }
-        }
-      ]
-    }
-  ]
-}
-EOF
-    fi
+# 3d. Final driver verification — read the sysfs driver symlink directly
+PREFLIGHT_DRIVER="$(basename "$(readlink "/sys/bus/pci/devices/${TARGET_BDF}/driver" 2>/dev/null)" 2>/dev/null || echo "none")"
+if [[ "$PREFLIGHT_DRIVER" != "vfio-pci" ]]; then
+    echo "FATAL: Stage 3 preflight FAILED"
+    echo "  Expected driver : vfio-pci"
+    echo "  Actual driver   : $PREFLIGHT_DRIVER"
+    echo "  Device BDF      : $TARGET_BDF"
+    echo "  sysfs path      : /sys/bus/pci/devices/${TARGET_BDF}/driver"
+    echo ""
+    echo "  The kernel NVMe driver still owns this device."
+    echo "  Run: sudo bash scripts/spdk-aws/setup_graviton_spdk.sh --nvme-bdf $TARGET_BDF"
+    exit 1
+fi
+echo "  $TARGET_BDF driver: vfio-pci (user-space NVMe verified)"
 
-    echo "[Stage 3a] SPDK bdevperf — Latency run (QD=1)"
-    if ! sudo LD_LIBRARY_PATH="$SPDK_LD_PATH" "$BDEVPERF_BIN" -c "$BDEV_CFG" -q 1 -o 4096 -w randrw -M "$RWMIXREAD" -t "$RUNTIME" > "$BDEV_LAT_LOG" 2>&1; then
-        echo "bdevperf latency run failed"
-        tail -n 60 "$BDEV_LAT_LOG"
-    fi
-    echo "[Stage 3m] SPDK bdevperf — Knee-of-curve run (QD=$IODEPTH_MID)"
-    if ! sudo LD_LIBRARY_PATH="$SPDK_LD_PATH" "$BDEVPERF_BIN" -c "$BDEV_CFG" -q "$IODEPTH_MID" -o 4096 -w randrw -M "$RWMIXREAD" -t "$RUNTIME" > "$BDEV_MID_LOG" 2>&1; then
-        echo "bdevperf mid-QD run failed"
-        tail -n 60 "$BDEV_MID_LOG"
-    fi
-    echo "[Stage 3b] SPDK bdevperf — Throughput run (QD=$IODEPTH)"
-    if ! sudo LD_LIBRARY_PATH="$SPDK_LD_PATH" "$BDEVPERF_BIN" -c "$BDEV_CFG" -q "$IODEPTH" -o 4096 -w randrw -M "$RWMIXREAD" -t "$RUNTIME" > "$BDEV_IOPS_LOG" 2>&1; then
-        echo "bdevperf throughput run failed"
-        tail -n 60 "$BDEV_IOPS_LOG"
-    fi
+# 3e. Verify IOMMU group if available (no-IOMMU mode is valid on Nitro)
+IOMMU_GROUP_PATH="$(readlink -f "/sys/bus/pci/devices/${TARGET_BDF}/iommu_group" 2>/dev/null || true)"
+if [[ -n "$IOMMU_GROUP_PATH" ]]; then
+    echo "  IOMMU group: $(basename "$IOMMU_GROUP_PATH")"
 else
-    echo "[Stage 3] Real SPDK bdevperf run (no synthetic bypass math)"
-    ensure_userspace_stage3_driver
-    BDEV_CFG="/tmp/arm_neoverse_bdevperf.json"
-    cat > "$BDEV_CFG" <<EOF
+    echo "  IOMMU group: none (vfio no-IOMMU mode — Nitro provides DMA isolation)"
+fi
+
+echo "[Stage 3] Preflight PASSED — launching SPDK bdevperf (PCIe bypass)"
+
+BDEV_CFG="/tmp/arm_neoverse_bdevperf.json"
+cat > "$BDEV_CFG" <<EOF
 {
     "subsystems": [
         {
@@ -590,25 +615,27 @@ else
     ]
 }
 EOF
-    echo "[Stage 3a] SPDK bdevperf — Latency run (QD=1)"
-    if ! sudo LD_LIBRARY_PATH="$SPDK_LD_PATH" "$BDEVPERF_BIN" -c "$BDEV_CFG" -q 1 -o 4096 -w randrw -M "$RWMIXREAD" -t "$RUNTIME" > "$BDEV_LAT_LOG" 2>&1; then
-        echo "bdevperf latency run failed"
-        tail -n 60 "$BDEV_LAT_LOG"
-        exit 1
-    fi
-    echo "[Stage 3m] SPDK bdevperf — Knee-of-curve run (QD=$IODEPTH_MID)"
-    if ! sudo LD_LIBRARY_PATH="$SPDK_LD_PATH" "$BDEVPERF_BIN" -c "$BDEV_CFG" -q "$IODEPTH_MID" -o 4096 -w randrw -M "$RWMIXREAD" -t "$RUNTIME" > "$BDEV_MID_LOG" 2>&1; then
-        echo "bdevperf mid-QD run failed"
-        tail -n 60 "$BDEV_MID_LOG"
-        exit 1
-    fi
-    echo "[Stage 3b] SPDK bdevperf — Throughput run (QD=$IODEPTH)"
-    if ! sudo LD_LIBRARY_PATH="$SPDK_LD_PATH" "$BDEVPERF_BIN" -c "$BDEV_CFG" -q "$IODEPTH" -o 4096 -w randrw -M "$RWMIXREAD" -t "$RUNTIME" > "$BDEV_IOPS_LOG" 2>&1; then
-        echo "bdevperf throughput run failed"
-        tail -n 120 "$BDEV_IOPS_LOG"
-        exit 1
-    fi
+
+echo "[Stage 3a] SPDK bdevperf — Latency run (QD=1)"
+if ! sudo LD_LIBRARY_PATH="$SPDK_LD_PATH" "$BDEVPERF_BIN" -c "$BDEV_CFG" -q 1 -o 4096 -w randrw -M "$RWMIXREAD" -t "$RUNTIME" > "$BDEV_LAT_LOG" 2>&1; then
+    echo "bdevperf latency run failed"
+    tail -n 60 "$BDEV_LAT_LOG"
+    exit 1
 fi
+echo "[Stage 3m] SPDK bdevperf — Knee-of-curve run (QD=$IODEPTH_MID)"
+if ! sudo LD_LIBRARY_PATH="$SPDK_LD_PATH" "$BDEVPERF_BIN" -c "$BDEV_CFG" -q "$IODEPTH_MID" -o 4096 -w randrw -M "$RWMIXREAD" -t "$RUNTIME" > "$BDEV_MID_LOG" 2>&1; then
+    echo "bdevperf mid-QD run failed"
+    tail -n 60 "$BDEV_MID_LOG"
+    exit 1
+fi
+echo "[Stage 3b] SPDK bdevperf — Throughput run (QD=$IODEPTH)"
+if ! sudo LD_LIBRARY_PATH="$SPDK_LD_PATH" "$BDEVPERF_BIN" -c "$BDEV_CFG" -q "$IODEPTH" -o 4096 -w randrw -M "$RWMIXREAD" -t "$RUNTIME" > "$BDEV_IOPS_LOG" 2>&1; then
+    echo "bdevperf throughput run failed"
+    tail -n 120 "$BDEV_IOPS_LOG"
+    exit 1
+fi
+
+fi  # end of SPDK-available else branch
 
 # ---------------------------------------------------------------------------
 # Parse results
@@ -655,26 +682,20 @@ parse_bdevperf() {
     echo "${val:-N/A}"
 }
 
+# bdevperf results (only if Stage 3 ran — otherwise already set to N/A)
+if [ -z "${BL:-}" ]; then
 BL=$(parse_bdevperf "$BDEV_LAT_LOG" lat)
 BL_IOPS=$(parse_bdevperf "$BDEV_LAT_LOG" iops)
 BM_LAT=$(parse_bdevperf "$BDEV_MID_LOG" lat)
 BM_IOPS=$(parse_bdevperf "$BDEV_MID_LOG" iops)
 BI=$(parse_bdevperf "$BDEV_IOPS_LOG" iops)
 BI_LAT=$(parse_bdevperf "$BDEV_IOPS_LOG" lat)
+fi
 
 # ---------------------------------------------------------------------------
 # Scorecard
 # ---------------------------------------------------------------------------
-STAGE3_LABEL=""
-if [ "$HAS_IOMMU" -eq 0 ]; then
-    if [ "${USE_URING:-0}" -eq 1 ]; then
-        STAGE3_LABEL="bdev_uring (io_uring reactor)"
-    else
-        STAGE3_LABEL="bdev_aio (SPDK reactor + kernel AIO)"
-    fi
-else
-    STAGE3_LABEL="bdev_nvme ($STAGE3_DRIVER → PCIe)"
-fi
+STAGE3_LABEL="${STAGE3_LABEL:-bdev_nvme (vfio-pci → PCIe bypass)}"
 
 echo ""
 echo "════════════════════════════════════════════════════════════════════════════"

@@ -102,17 +102,17 @@ The ultimate capstone of `dataplane-emu` is providing seamless, zero-modificatio
 * **Hardware-Assisted OS Services (RISC-V):** Emulating RISC-V hardware accelerators (inspired by the ChamelIoT framework) that transparently replace software-based OS kernel services (scheduling, IPC) at compile time, achieving drastic latency reduction for unmodified legacy software.
 
 ### Validation & Benchmarking: The "Executive Demo"
-To empirically prove the performance gains of our kernel-bypass architecture on Azure Cobalt 100 (Arm Neoverse), we utilize a custom-compiled `fio` benchmark targeting the SPDK engine. 
+To empirically prove the performance gains of our kernel-bypass architecture on AWS Graviton3 (Neoverse-V1) and Azure Cobalt 100 (Neoverse-N2), we utilize a deterministic three-stage benchmark comparing kernel fio, user-space FUSE bridge, and real SPDK `bdevperf` PCIe bypass at multiple queue depths (QD=1, QD=16/32, QD=128).
 
-By pushing a massive queue depth (`iodepth=256`) of small 4K random reads/writes through a single polling thread (`thread=1`), the benchmark demonstrates:
+By sweeping queue depths from latency-sensitive (QD=1) through knee-of-curve (QD=16) to throughput-saturating (QD=128) with 4K mixed random reads/writes, the benchmark demonstrates:
 1. **Zero-Copy DMA:** Complete evasion of the Linux VFS and block layer overhead.
 2. **Lock-Free Contention Resolution:** The ability of Neoverse-N2 Large System Extensions (LSE) atomics to sustain extreme queue contention without POSIX mutex degradation.
 3. **Compute Isolation:** Saturating the local NVMe drive using only a single physical core, leaving the remaining cluster topology entirely free for compute-heavy AI workloads.
 
-### Hardware Optimization: Azure Cobalt 100 & AWS Graviton4
-To achieve true zero-copy I/O and maximize throughput on modern cloud silicon, `dataplane-emu` is heavily optimized for the Azure Cobalt 100 and AWS Graviton4 architectures.
+### Hardware Optimization: AWS Graviton3/4 & Azure Cobalt 100
+To achieve true zero-copy I/O and maximize throughput on modern cloud silicon, `dataplane-emu` is heavily optimized for the AWS Graviton3 (Neoverse-V1), AWS Graviton4 (Neoverse-V2), and Azure Cobalt 100 (Neoverse-N2) architectures.
 
-*   **Large System Extensions (LSE):** We bypass traditional, heavily contended x86 locks by compiling with `-mcpu=neoverse-v2 -moutline-atomics`. This forces the binary to utilize hardware-accelerated LSE atomics for our submission and completion queues.
+*   **Large System Extensions (LSE):** We bypass traditional, heavily contended x86 locks by compiling with `-mcpu=neoverse-v1 -moutline-atomics` (Graviton3) or `-mcpu=neoverse-v2` (Graviton4/Cobalt 100). This forces the binary to utilize hardware-accelerated LSE atomics (CASAL/LDADD) for our submission and completion queues.
 *   **Strict Memory Semantics:** Because ARM64 uses a weakly ordered memory model, all lock-free SPDK ring buffers enforce strict `std::memory_order_acquire` and `std::memory_order_release` semantics to prevent microarchitectural hazards.
 *   **1:1 Physical Core Pinning (No SMT):** Arm Neoverse maps vCPUs directly to physical cores. We pin our DPDK-style polling threads directly to these cores (`--core-mask`), guaranteeing zero performance jitter from shared execution resources.
 *   **SVE2 & NEON Vectorization:** Bulk data transformations and checksums are auto-vectorized using the Scalable Vector Extension 2 (SVE2), massively outperforming legacy x86 instruction-level parallelism.
@@ -159,6 +159,7 @@ Representative snapshot (trimmed for readability):
 ├── 📁 scripts/
 │   └── 📁 spdk-aws/               # AWS EC2 Graviton deployment automation  
 │       ├── 🖥️ provision-graviton.sh
+│       ├── 🖥️ setup_graviton_spdk.sh  # One-touch SPDK build + vfio-pci bind
 │       └── 🖥️ start-graviton.ps1  
 └── 📁 src/
     ├── 📄 dataplane_ring.cpp      # Standalone lock-free queue implementations
@@ -180,9 +181,9 @@ Representative snapshot (trimmed for readability):
 
 ### Prerequisites
 * **Hardware:** ARM64 architecture (AWS Graviton3 `c7g`/`c7gd` recommended)
-* **Linux:** Ubuntu 22.04+ 
+* **Linux:** Amazon Linux 2023 or Ubuntu 22.04+ 
 * **Compiler:** GCC/G++ 11+ (C++17 support required)
-* **Dependencies:** `libfuse3-dev`, `libnuma-dev`, `pkg-config`
+* **Dependencies:** `libfuse3-dev` / `fuse3-devel`, `libnuma-dev` / `numactl-devel`, `pkg-config`
 
 ### Build Instructions
 ```bash
@@ -234,16 +235,20 @@ head -c 128 /mnt/virtual_nvme/nvme_raw_0 | hexdump -C
 ```
 
 ### 4. Arm Neoverse Silicon Data Plane Demo
-This benchmark quantifies the "20-microsecond tax" reduction on [Azure Cobalt 100](https://azure.microsoft.com/en-us/blog/microsoft-azure-delivers-purpose-built-chips-with-azure-cobalt-100-and-azure-maia-100/) silicon. It compares:
-- a legacy XFS baseline,
-- a user-space bridge path through `dataplane-emu`, and
-- a strict PCIe Stage 3 SPDK `bdevperf` run (no synthetic extrapolation).
+This benchmark quantifies the "20-microsecond tax" reduction on [AWS Graviton3](https://aws.amazon.com/ec2/graviton/) (Neoverse-V1) and [Azure Cobalt 100](https://azure.microsoft.com/en-us/blog/microsoft-azure-delivers-purpose-built-chips-with-azure-cobalt-100-and-azure-maia-100/) (Neoverse-N2) silicon. It compares:
+- a legacy XFS kernel baseline (fio),
+- a user-space FUSE bridge path through `dataplane-emu` (fio), and
+- a strict PCIe Stage 3 SPDK `bdevperf` run via vfio-pci (no synthetic extrapolation).
 
-The default stress profile is QD=128 with 4k mixed random IO to expose high-concurrency kernel contention behavior.
+The sweep covers QD=1 (latency), QD=16/32 (knee-of-curve), and QD=128 (throughput) with 4K mixed random IO.
 
 **Run the deterministic demo:**
 ```bash
-ARM_NEOVERSE_DEMO_CONFIRM=YES ./launch_arm_neoverse_demo_deterministic.sh
+# Full 3-stage sweep at QD=1, QD=32 (knee), QD=128 (throughput)
+bash demo_QD_1_32_128.sh
+
+# Or manually with a custom mid-QD:
+ARM_NEOVERSE_DEMO_CONFIRM=YES DEMO_MID_IODEPTH=16 ./launch_arm_neoverse_demo_deterministic.sh
 ```
 
 #### Representative Scorecard (sample output; rerun to refresh values)
@@ -275,24 +280,44 @@ Memory Model           | Strong/Syscall | FUSE/Copy      | SqCq/Lock-Free | Rela
 > **Measurement honesty:** Stages 1–3 are measured directly by `fio`. Stage 4 (PCIe Bypass) is **projected** from the FUSE→SPDK ratio established in prior benchmarks on comparable hardware. VFIO device passthrough is not available on this Azure VM (no IOMMU group for the NVMe device). When VFIO becomes available, projected numbers will be replaced with `bdevperf` measurements.
 
 ```console
-==========================================================================
+════════════════════════════════════════════════════════════════════════════
   AWS Graviton3 (Neoverse-V1) | c7gd.xlarge | SILICON DATA PLANE SCORECARD
   Target Drive: Amazon EC2 NVMe Instance Storage (Nitro SSD Controller)
-==========================================================================
-Architecture              | Latency (us) | IOPS
---------------------------------------------------------------------------
-1. Legacy Kernel          | 51.42        | 19260
-2. User-Space Bridge      | 12.28        | 78287
-3. Zero-Copy (bdevperf)   | 7.98         | 121345
-==========================================================================
-Metric               | Legacy Path    | Bridge Path    | Bypass Path
---------------------------------------------------------------------------
-Max CPU (Core 0)     | 7.2%           | 44.2%          | 100.0%
-Context Switches     | 385230         | 31933          | 7
-Memory Model         | Strong/Syscall | FUSE/Copy      | Relaxed/Lock-Free
-==========================================================================
+  Config: bs=4k  runtime=30s  rwmix=50/50
+  Stage 3: bdev_nvme (vfio-pci → PCIe bypass, no-IOMMU / Nitro DMA isolation)
+════════════════════════════════════════════════════════════════════════════
 
+  ┌─ Latency (QD=1) ──────────────────────────────────────────────────────┐
+  │ Architecture                         Avg (μs)          IOPS          │
+  │ ──────────────────────────────  ────────────  ────────────          │
+  │ 1. Kernel (XFS + fio)                    50.18         19178          │
+  │ 2. User-Space Bridge (FUSE)              24.03         33645          │
+  │ 3. SPDK Zero-Copy (bdevperf)             22.16         44994          │
+  └────────────────────────────────────────────────────────────────────────┘
+
+  ┌─ Knee-of-Curve (QD=16) ───────────────────────────────────────────────┐
+  │ Architecture                         Avg (μs)          IOPS          │
+  │ ──────────────────────────────  ────────────  ────────────          │
+  │ 1. Kernel (XFS + fio)                   226.02         70158          │
+  │ 2. User-Space Bridge (FUSE)             233.07         64550          │
+  │ 3. SPDK Zero-Copy (bdevperf)            227.98         70161          │
+  └────────────────────────────────────────────────────────────────────────┘
+
+  ┌─ Throughput (QD=128) ──────────────────────────────────────────────────┐
+  │ Architecture                         Avg (μs)          IOPS          │
+  │ ──────────────────────────────  ────────────  ────────────          │
+  │ 1. Kernel (XFS + fio)                  1878.97         68038          │
+  │ 2. User-Space Bridge (FUSE)            2065.59         61502          │
+  │ 3. SPDK Zero-Copy (bdevperf)           1880.66         68056          │
+  └────────────────────────────────────────────────────────────────────────┘
+════════════════════════════════════════════════════════════════════════════
 ```
+
+> [!NOTE]
+> **Measurement honesty:** All three stages are **directly measured** on a live c7gd.xlarge instance.
+> Stage 3 uses real SPDK `bdevperf` via vfio-pci PCIe bypass in no-IOMMU mode
+> (standard for EC2 Nitro, which provides DMA isolation at the hypervisor level).
+> SPDK v26.01, compiled with `-mcpu=neoverse-v1 -moutline-atomics` for LSE hardware atomics.
 
 > [!TIP]
 > The deterministic launcher writes explicit stage logs under `/tmp`.
