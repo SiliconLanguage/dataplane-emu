@@ -60,3 +60,7 @@ scripts/spdk-aws/.env
 *.pem
 *.key
 scripts/spdk-aws/AWS_AUTOMATION_FINDINGS_*.md
+
+# Private .github content (synced to copilot-customizations repo only)
+.github/retrospective/
+.github/prompts/
