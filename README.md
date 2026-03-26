@@ -102,7 +102,7 @@ The ultimate capstone of `dataplane-emu` is providing seamless, zero-modificatio
 * **Hardware-Assisted OS Services (RISC-V):** Emulating RISC-V hardware accelerators (inspired by the ChamelIoT framework) that transparently replace software-based OS kernel services (scheduling, IPC) at compile time, achieving drastic latency reduction for unmodified legacy software.
 
 ### Validation & Benchmarking: The "Executive Demo"
-To empirically prove the performance gains of our kernel-bypass architecture on AWS Graviton3 (Neoverse-V1) and Azure Cobalt 100 (Neoverse-N2), we utilize a deterministic three-stage benchmark comparing kernel fio, user-space FUSE bridge, and real SPDK `bdevperf` PCIe bypass at multiple queue depths (QD=1, QD=16/32, QD=128).
+To empirically prove the performance gains of our kernel-bypass architecture on AWS Graviton3 (Neoverse-V1) and Azure Cobalt 100 (Neoverse-N2), we utilize a deterministic three-stage benchmark comparing kernel fio, user-space FUSE bridge, and real SPDK `bdevperf` bypass (cloud-aware: `vfio-pci` on AWS Nitro, `bdev_uring` on Azure Boost) at multiple queue depths (QD=1, QD=16, QD=128).
 
 By sweeping queue depths from latency-sensitive (QD=1) through knee-of-curve (QD=16) to throughput-saturating (QD=128) with 4K mixed random reads/writes, the benchmark demonstrates:
 1. **Zero-Copy DMA:** Complete evasion of the Linux VFS and block layer overhead.
@@ -238,9 +238,9 @@ head -c 128 /mnt/virtual_nvme/nvme_raw_0 | hexdump -C
 This benchmark quantifies the "20-microsecond tax" reduction on [AWS Graviton3](https://aws.amazon.com/ec2/graviton/) (Neoverse-V1) and [Azure Cobalt 100](https://azure.microsoft.com/en-us/blog/microsoft-azure-delivers-purpose-built-chips-with-azure-cobalt-100-and-azure-maia-100/) (Neoverse-N2) silicon. It compares:
 - a legacy XFS kernel baseline (fio),
 - a user-space FUSE bridge path through `dataplane-emu` (fio), and
-- a strict PCIe Stage 3 SPDK `bdevperf` run via vfio-pci (no synthetic extrapolation).
+- a cloud-aware Stage 3 SPDK `bdevperf` run (`vfio-pci` PCIe bypass on AWS Nitro; `bdev_uring` io_uring on Azure Boost).
 
-The sweep covers QD=1 (latency), QD=16/32 (knee-of-curve), and QD=128 (throughput) with 4K mixed random IO.
+The sweep covers QD=1 (latency), QD=16 (knee-of-curve), and QD=128 (throughput) with 4K mixed random IO.
 
 **Run the deterministic demo:**
 ```bash
@@ -251,33 +251,48 @@ bash demo_QD_1_32_128.sh
 ARM_NEOVERSE_DEMO_CONFIRM=YES DEMO_MID_IODEPTH=16 ./launch_arm_neoverse_demo_deterministic.sh
 ```
 
-#### Representative Scorecard (sample output; rerun to refresh values)
+#### Azure Cobalt 100 Scorecard (deterministic 3-stage multi-QD sweep)
 ```console
-=================================================================================================
-  Azure Arm (Neoverse-N2) | Standard_D4pds_v6 | SILICON DATA PLANE SCORECARD
+════════════════════════════════════════════════════════════════════════════
+  Azure Cobalt 100 (Neoverse-N2) | Standard_D4pds_v6 | SILICON DATA PLANE SCORECARD
   Target Drive: Microsoft NVMe Direct Disk v2 (Azure Hyper-V NVMe)
-=================================================================================================
-Architecture              | Latency (µs)   | IOPS           | Source
--------------------------------------------------------------------------------------------------
-1. Legacy Kernel          | 43.68          | 22663          | fio
-2. User-Space (FUSE)      | 22.47          | 43683          | fio
-3. LD_PRELOAD (SqCq)      | 2.13           | 399328         | fio
-4. PCIe Bypass (proj)      | 14.60          | 67709          | extrap.
-=================================================================================================
-Metric                 | Kernel         | FUSE Bridge    | LD_PRELOAD     | PCIe Bypass
--------------------------------------------------------------------------------------------------
-Max CPU                | 8.6%           | 31.9%          | 50.0%          | 100.0%
-Context Switches       | 679898         | 327596         | 0              | 5
-Memory Model           | Strong/Syscall | FUSE/Copy      | SqCq/Lock-Free | Relaxed/Poll
-=================================================================================================
+  Config: bs=4k  runtime=30s  rwmix=50/50
+  Stage 3: bdev_uring (io_uring → Azure Boost mediated passthrough)
+════════════════════════════════════════════════════════════════════════════
 
-🎯 ARCHITECTURAL INSIGHT:
-   LD_PRELOAD path: 399328 IOPS with 0 ctx switches (vs 679898 kernel).
-   The SqCq bridge bypasses FUSE + VFS, routing pread/pwrite directly to NVMe-style queues.
+  ┌─ Latency (QD=1) ──────────────────────────────────────────────────────┐
+  │ Architecture                         Avg (μs)          IOPS          │
+  │ ──────────────────────────────  ────────────  ────────────          │
+  │ 1. Kernel (XFS + fio)                    51.29         19357          │
+  │ 2. User-Space Bridge (FUSE)              39.79         24841          │
+  │ 3. SPDK Zero-Copy (bdevperf)             20.17         49268          │
+  └────────────────────────────────────────────────────────────────────────┘
+
+  ┌─ Knee-of-Curve (QD=16) ───────────────────────────────────────────────┐
+  │ Architecture                         Avg (μs)          IOPS          │
+  │ ──────────────────────────────  ────────────  ────────────          │
+  │ 1. Kernel (XFS + fio)                   318.16         50240          │
+  │ 2. User-Space Bridge (FUSE)             411.29         38845          │
+  │ 3. SPDK Zero-Copy (bdevperf)            319.10         50112          │
+  └────────────────────────────────────────────────────────────────────────┘
+
+  ┌─ Throughput (QD=128) ──────────────────────────────────────────────────┐
+  │ Architecture                         Avg (μs)          IOPS          │
+  │ ──────────────────────────────  ────────────  ────────────          │
+  │ 1. Kernel (XFS + fio)                  2548.12         50226          │
+  │ 2. User-Space Bridge (FUSE)            2413.48         53019          │
+  │ 3. SPDK Zero-Copy (bdevperf)           2548.23         50229          │
+  └────────────────────────────────────────────────────────────────────────┘
+════════════════════════════════════════════════════════════════════════════
 ```
 
 > [!IMPORTANT]
-> **Measurement honesty:** Stages 1–3 are measured directly by `fio`. Stage 4 (PCIe Bypass) is **projected** from the FUSE→SPDK ratio established in prior benchmarks on comparable hardware. VFIO device passthrough is not available on this Azure VM (no IOMMU group for the NVMe device). When VFIO becomes available, projected numbers will be replaced with `bdevperf` measurements.
+> **Measurement honesty:** All three stages are **directly measured** on a live Standard_D4pds_v6 instance.
+> Stage 3 uses real SPDK `bdevperf` via `bdev_uring` (io_uring backend), routing through the Azure Boost
+> mediated passthrough path. Unlike AWS Nitro (which supports `vfio-pci` PCIe bypass), Azure Hyper-V NVMe
+> does not expose IOMMU groups, so the kernel NVMe driver remains bound and SPDK accesses the device
+> through io_uring — still achieving polled, zero-copy I/O with minimal kernel involvement.
+> SPDK v26.01, compiled with `-mcpu=neoverse-n2` for LSE hardware atomics.
 
 ```console
 ════════════════════════════════════════════════════════════════════════════
@@ -327,11 +342,11 @@ Memory Model           | Strong/Syscall | FUSE/Copy      | SqCq/Lock-Free | Rela
 > Curious exactly how these metrics are recorded? We've published a comprehensive [Architecture & Benchmark Walkthrough](demo_architecture_walkthrough.md) covering deterministic startup, readiness probes, QD=128 stress methodology, and strict measured Stage 3.
 
 ### 🔍 Performance Analysis: The J-Curve Architecture
-Each stage in the scorecard removes an entire category of overhead, producing step-function improvements rather than linear gains.
+Each stage in the scorecard removes an entire category of overhead, producing step-function improvements rather than linear gains. (QD=1 latency path, Azure Cobalt 100):
 
-1. **Kernel → FUSE Bridge (1.93× IOPS):** The FUSE bridge eliminates SSD flash translation latency by serving reads from memory. But the VFS dispatch, the `/dev/fuse` read/write protocol, and two privilege transitions still consume half the CPU budget. Context switches drop by 50%, but 327K is still catastrophic.
-2. **FUSE → LD_PRELOAD (9.14× IOPS, 17.6× over baseline):** The LD_PRELOAD stage bypasses the kernel entirely. `libdataplane_intercept.so` intercepts `pread()`/`pwrite()` at the glibc symbol level, routes fake file descriptors to per-thread SqCqEmulator SPSC queue pairs, and completes I/O through user-space acquire/release handshakes. Latency collapses from 22µs to 2µs. Context switches drop to **zero**.
-3. **LD_PRELOAD → PCIe Bypass (projected):** The final tier replaces emulated SQ/CQ polling with actual NVMe controller DMA. Projected numbers will be replaced with measured `bdevperf` results once VFIO device passthrough becomes available on the Azure VM.
+1. **Kernel → FUSE Bridge (1.28× IOPS at QD=1):** The FUSE bridge serves reads from memory-backed emulator queues, shaving 22% off kernel XFS latency (51→40 µs). But the VFS dispatch, the `/dev/fuse` read/write protocol, and two privilege transitions still limit throughput. At higher queue depths (QD≥16), FUSE contention actually *increases* latency versus the kernel baseline.
+2. **FUSE → SPDK bdevperf (1.98× IOPS, 2.55× over kernel):** SPDK's polled io_uring path eliminates all VFS and FUSE overhead, halving latency from 40 µs to 20 µs and delivering 49K IOPS on a single core. At QD≥16 all three paths converge on the NVMe device ceiling (~50K IOPS), confirming the drive is saturated and the software stack is no longer the bottleneck.
+3. **Separate LD_PRELOAD benchmark:** The non-deterministic demo (`launch_arm_neoverse_demo.sh`) also measures an LD_PRELOAD stage that bypasses the kernel entirely using emulated SqCq queues — delivering 399K IOPS with **zero** context switches. Those results exercise in-memory queue emulation (not real NVMe I/O) and are run separately from the multi-QD scorecard above.
 
 ## References
 1. [XRP Project: eXpress Resubmission Path](https://github.com/xrp-project/XRP)

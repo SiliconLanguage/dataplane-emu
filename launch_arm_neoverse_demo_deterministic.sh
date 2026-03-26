@@ -12,8 +12,35 @@ IODEPTH_MID="${DEMO_MID_IODEPTH:-32}"
 BS="${DEMO_BS:-4k}"
 SIZE="${DEMO_SIZE:-4G}"
 RWMIXREAD="${DEMO_RWMIXREAD:-50}"
-STAGE3_DRIVER="${DEMO_STAGE3_DRIVER:-vfio-pci}"
 SKIP_BUILD="${DEMO_SKIP_BUILD:-0}"
+
+# ---------------------------------------------------------------------------
+# Cloud provider detection (DMI-based, no network dependency)
+# ---------------------------------------------------------------------------
+SYS_VENDOR="$(cat /sys/devices/virtual/dmi/id/sys_vendor 2>/dev/null || true)"
+PRODUCT_NAME="$(cat /sys/devices/virtual/dmi/id/product_name 2>/dev/null || true)"
+CLOUD_PROVIDER="unknown"
+if echo "$SYS_VENDOR $PRODUCT_NAME" | grep -Eqi 'microsoft|azure'; then
+    CLOUD_PROVIDER="azure"
+elif echo "$SYS_VENDOR $PRODUCT_NAME" | grep -Eqi 'amazon|ec2'; then
+    CLOUD_PROVIDER="aws"
+fi
+
+# Stage 3 backend selection:
+#   AWS  (Nitro)       → bdev_nvme via vfio-pci  (true PCIe bypass)
+#   Azure (Boost/MANA) → bdev_uring via io_uring (mediated passthrough;
+#                         vfio-pci cannot bind Azure's Hyper-V NVMe device)
+if [ -n "${DEMO_STAGE3_DRIVER:-}" ]; then
+    STAGE3_DRIVER="$DEMO_STAGE3_DRIVER"
+elif [ "$CLOUD_PROVIDER" = "azure" ]; then
+    STAGE3_DRIVER="kernel"   # keep kernel NVMe driver; use bdev_uring
+else
+    STAGE3_DRIVER="vfio-pci" # default: PCIe bypass
+fi
+STAGE3_MODE="pcie"  # "pcie" = bdev_nvme via vfio-pci, "uring" = bdev_uring
+if [ "$STAGE3_DRIVER" = "kernel" ]; then
+    STAGE3_MODE="uring"
+fi
 
 BASE_LOG="/tmp/arm_neoverse_base.log"
 BRIDGE_LOG="/tmp/arm_neoverse_fuse.log"
@@ -521,11 +548,12 @@ fi
 
 
 # ---------------------------------------------------------------------------
-# Stage 3: SPDK bdevperf — STRICT vfio-pci PCIe bypass (no fallbacks)
+# Stage 3: SPDK bdevperf
 # ---------------------------------------------------------------------------
-# AWS Graviton / Nitro: The NVMe device MUST be owned by vfio-pci.
-# No bdev_aio, no bdev_uring, no kernel AIO fallbacks.  If the preflight
-# check fails, we exit immediately rather than faking Stage 3 results.
+#   AWS  (Nitro)  → bdev_nvme via vfio-pci   (true PCIe bypass, no-IOMMU)
+#   Azure (Boost) → bdev_uring via io_uring   (mediated passthrough;
+#                   kernel NVMe driver stays bound — vfio-pci probe fails
+#                   on Azure Hyper-V NVMe with EINVAL)
 # ---------------------------------------------------------------------------
 
 # Gate: SPDK must be present for Stage 3
@@ -535,7 +563,7 @@ if [ -z "$SPDK_SETUP" ] || [ -z "${BDEVPERF_BIN:-}" ]; then
     echo "  Stage 3 SKIPPED — SPDK not available on this host"
     echo "════════════════════════════════════════════════════════════════"
     echo "  Stages 1 & 2 completed successfully."
-    echo "  To enable Stage 3 (PCIe bypass via bdevperf):"
+    echo "  To enable Stage 3:"
     echo "    1. git clone https://github.com/spdk/spdk.git --recursive"
     echo "    2. sudo bash scripts/spdk-aws/setup_graviton_spdk.sh"
     echo "    3. Re-run this demo"
@@ -544,8 +572,64 @@ if [ -z "$SPDK_SETUP" ] || [ -z "${BDEVPERF_BIN:-}" ]; then
     # Print the Stages 1+2 scorecard with N/A for Stage 3
     BL="N/A"; BL_IOPS="N/A"; BM_LAT="N/A"; BM_IOPS="N/A"; BI="N/A"; BI_LAT="N/A"
     STAGE3_LABEL="SKIPPED (SPDK not installed)"
-else
 
+elif [ "$STAGE3_MODE" = "uring" ]; then
+# ---------------------------------------------------------------------------
+# Stage 3 — Azure path: bdev_uring (kernel NVMe driver stays bound)
+# ---------------------------------------------------------------------------
+echo "[Stage 3] Azure Boost path — bdev_uring (io_uring mediated passthrough)"
+echo "  Cloud provider : $CLOUD_PROVIDER"
+echo "  NVMe BDF       : $TARGET_BDF"
+echo "  Kernel driver  : $(basename "$(readlink "/sys/bus/pci/devices/${TARGET_BDF}/driver" 2>/dev/null)" 2>/dev/null || echo none)"
+echo "  vfio-pci       : not used (Azure Hyper-V NVMe rejects vfio-pci bind)"
+echo "  Backend        : bdev_uring → /dev/$(basename "$D")"
+
+# bdev_uring talks to the block device directly via io_uring; the kernel
+# NVMe driver remains bound.  No hugepages or driver rebinding needed.
+BDEV_CFG="/tmp/arm_neoverse_bdevperf.json"
+cat > "$BDEV_CFG" <<EOF
+{
+    "subsystems": [
+        {
+            "subsystem": "bdev",
+            "config": [
+                {
+                    "method": "bdev_uring_create",
+                    "params": {
+                        "name": "Uring0",
+                        "filename": "$D",
+                        "block_size": 512
+                    }
+                }
+            ]
+        }
+    ]
+}
+EOF
+
+echo "[Stage 3a] SPDK bdevperf (uring) — Latency run (QD=1)"
+if ! sudo LD_LIBRARY_PATH="$SPDK_LD_PATH" "$BDEVPERF_BIN" -c "$BDEV_CFG" -q 1 -o 4096 -w randrw -M "$RWMIXREAD" -t "$RUNTIME" > "$BDEV_LAT_LOG" 2>&1; then
+    echo "bdevperf (uring) latency run failed"
+    tail -n 60 "$BDEV_LAT_LOG"
+    exit 1
+fi
+echo "[Stage 3m] SPDK bdevperf (uring) — Knee-of-curve run (QD=$IODEPTH_MID)"
+if ! sudo LD_LIBRARY_PATH="$SPDK_LD_PATH" "$BDEVPERF_BIN" -c "$BDEV_CFG" -q "$IODEPTH_MID" -o 4096 -w randrw -M "$RWMIXREAD" -t "$RUNTIME" > "$BDEV_MID_LOG" 2>&1; then
+    echo "bdevperf (uring) mid-QD run failed"
+    tail -n 60 "$BDEV_MID_LOG"
+    exit 1
+fi
+echo "[Stage 3b] SPDK bdevperf (uring) — Throughput run (QD=$IODEPTH)"
+if ! sudo LD_LIBRARY_PATH="$SPDK_LD_PATH" "$BDEVPERF_BIN" -c "$BDEV_CFG" -q "$IODEPTH" -o 4096 -w randrw -M "$RWMIXREAD" -t "$RUNTIME" > "$BDEV_IOPS_LOG" 2>&1; then
+    echo "bdevperf (uring) throughput run failed"
+    tail -n 120 "$BDEV_IOPS_LOG"
+    exit 1
+fi
+
+else
+# ---------------------------------------------------------------------------
+# Stage 3 — AWS path: bdev_nvme via vfio-pci (true PCIe bypass)
+# ---------------------------------------------------------------------------
 echo "[Stage 3] Preflight: verifying vfio-pci ownership"
 
 # 3a. IOMMU groups — if not present, enable no-IOMMU mode (standard for EC2 Nitro)
@@ -635,7 +719,7 @@ if ! sudo LD_LIBRARY_PATH="$SPDK_LD_PATH" "$BDEVPERF_BIN" -c "$BDEV_CFG" -q "$IO
     exit 1
 fi
 
-fi  # end of SPDK-available else branch
+fi  # end of Stage 3 branch
 
 # ---------------------------------------------------------------------------
 # Parse results
@@ -695,7 +779,13 @@ fi
 # ---------------------------------------------------------------------------
 # Scorecard
 # ---------------------------------------------------------------------------
-STAGE3_LABEL="${STAGE3_LABEL:-bdev_nvme (vfio-pci → PCIe bypass)}"
+if [ -z "${STAGE3_LABEL:-}" ]; then
+    if [ "$STAGE3_MODE" = "uring" ]; then
+        STAGE3_LABEL="bdev_uring (io_uring → Azure Boost mediated passthrough)"
+    else
+        STAGE3_LABEL="bdev_nvme (vfio-pci → PCIe bypass)"
+    fi
+fi
 
 echo ""
 echo "════════════════════════════════════════════════════════════════════════════"
