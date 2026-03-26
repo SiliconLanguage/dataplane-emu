@@ -8,15 +8,19 @@ X="${DEMO_MOUNT_DIR:-/mnt/nvme_xfs}"
 C="${DEMO_ARM_DIR:-/tmp/arm_neoverse}"
 RUNTIME="${DEMO_RUNTIME_SEC:-30}"
 IODEPTH="${DEMO_IODEPTH:-128}"
+IODEPTH_MID="${DEMO_MID_IODEPTH:-32}"
 BS="${DEMO_BS:-4k}"
 SIZE="${DEMO_SIZE:-4G}"
 RWMIXREAD="${DEMO_RWMIXREAD:-50}"
 STAGE3_DRIVER="${DEMO_STAGE3_DRIVER:-vfio-pci}"
+SKIP_BUILD="${DEMO_SKIP_BUILD:-0}"
 
 BASE_LOG="/tmp/arm_neoverse_base.log"
 BRIDGE_LOG="/tmp/arm_neoverse_fuse.log"
 SPDK_SETUP_LOG="/tmp/arm_neoverse_spdk_setup.log"
-BDEV_LOG="/tmp/arm_neoverse_bdevperf.log"
+BDEV_LAT_LOG="/tmp/arm_neoverse_bdevperf_lat.log"
+BDEV_MID_LOG="/tmp/arm_neoverse_bdevperf_mid.log"
+BDEV_IOPS_LOG="/tmp/arm_neoverse_bdevperf_iops.log"
 ENGINE_LOG="/tmp/arm_neoverse_engine.log"
 BUILD_LOG="/tmp/arm_neoverse_bdevperf_build.log"
 ENGINE_PID=""
@@ -31,9 +35,92 @@ require_cmd() {
     fi
 }
 
-for cmd in sudo fio jq awk bc findmnt lsblk readlink grep timeout modprobe; do
+for cmd in sudo fio jq awk bc findmnt lsblk readlink grep timeout modprobe cmake make; do
     require_cmd "$cmd"
 done
+
+# =========================================================================
+# Build Phase: ensure all binaries are ready before running the demo
+# =========================================================================
+install_build_deps() {
+    echo "[Build] Checking build dependencies..."
+    local pkgs_needed=()
+
+    # Core build deps
+    dpkg -s build-essential  &>/dev/null || pkgs_needed+=(build-essential)
+    dpkg -s pkg-config       &>/dev/null || pkgs_needed+=(pkg-config)
+    dpkg -s libfuse3-dev     &>/dev/null || pkgs_needed+=(libfuse3-dev)
+    dpkg -s libnuma-dev      &>/dev/null || pkgs_needed+=(libnuma-dev)
+    dpkg -s uuid-dev         &>/dev/null || pkgs_needed+=(uuid-dev)
+    dpkg -s libssl-dev       &>/dev/null || pkgs_needed+=(libssl-dev)
+    dpkg -s libaio-dev       &>/dev/null || pkgs_needed+=(libaio-dev)
+    dpkg -s liburing-dev     &>/dev/null || pkgs_needed+=(liburing-dev)
+
+    if [ ${#pkgs_needed[@]} -gt 0 ]; then
+        echo "[Build] Installing missing packages: ${pkgs_needed[*]}"
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq "${pkgs_needed[@]}"
+    else
+        echo "[Build] All build dependencies satisfied"
+    fi
+}
+
+# Rebuild SPDK with io_uring if not already enabled
+ensure_spdk_uring() {
+    local spdk_dir="./spdk"
+    local config_mk="$spdk_dir/mk/config.mk"
+
+    if [ ! -f "$config_mk" ]; then
+        echo "[Build] SPDK config not found — full SPDK build required"
+        return 1
+    fi
+
+    # Check if io_uring is already enabled
+    if grep -q 'CONFIG_URING?=y' "$config_mk" 2>/dev/null; then
+        echo "[Build] SPDK already built with io_uring support"
+        return 0
+    fi
+
+    # Only rebuild if liburing-dev is available
+    if ! dpkg -s liburing-dev &>/dev/null; then
+        echo "[Build] liburing-dev not available — skipping io_uring rebuild"
+        return 0
+    fi
+
+    echo "[Build] Rebuilding SPDK with io_uring support..."
+    # SPDK source tree may be root-owned (submodule clone); fix perms so
+    # configure can write CONFIG.sh and mk/config.mk as the current user.
+    local abs_spdk_dir
+    abs_spdk_dir="$(cd "$spdk_dir" && pwd)"
+    if [ "$(stat -c '%U' "$abs_spdk_dir/CONFIG")" != "$USER" ]; then
+        echo "[Build] Fixing SPDK source tree ownership..."
+        sudo chown -R "$USER":"$USER" "$abs_spdk_dir"
+    fi
+    pushd "$spdk_dir" > /dev/null
+    PKG_CONFIG_PATH="$abs_spdk_dir/dpdk/build/lib/pkgconfig:${PKG_CONFIG_PATH:-}" \
+        ./configure --with-dpdk --with-uring --target-arch=native
+    JOBS="$(nproc)"
+    make -j"$JOBS"
+    popd > /dev/null
+    echo "[Build] SPDK rebuild with io_uring complete"
+}
+
+# Build the dataplane-emu binary
+ensure_dataplane_emu() {
+    if [ -x "./build/dataplane-emu" ]; then
+        echo "[Build] dataplane-emu binary exists"
+        return 0
+    fi
+    echo "[Build] Building dataplane-emu..."
+    mkdir -p build
+    cd build && cmake .. && make -j"$(nproc)" && cd ..
+}
+
+if [ "$SKIP_BUILD" != "1" ]; then
+    install_build_deps
+    ensure_spdk_uring
+    ensure_dataplane_emu
+fi
 
 ROOT_SRC=$(findmnt -n -o SOURCE / || true)
 ROOT_DISK=$(lsblk -no PKNAME "$ROOT_SRC" 2>/dev/null | head -n 1 || true)
@@ -180,12 +267,16 @@ if [ -z "$BDEVPERF_BIN" ]; then
     fi
 fi
 
+# SPDK shared libraries may be in non-standard paths after a local build
+SPDK_LD_PATH="$SCRIPT_DIR/spdk/build/lib:$SCRIPT_DIR/spdk/dpdk/build/lib"
+export LD_LIBRARY_PATH="$SPDK_LD_PATH:${LD_LIBRARY_PATH:-}"
+
 echo "=== Deterministic ARM Neoverse Demo ==="
 echo "Target device: $D"
 echo "Target PCI BDF: $TARGET_BDF"
 echo "SPDK setup: $SPDK_SETUP"
 echo "bdevperf: $BDEVPERF_BIN"
-echo "Logs: $BASE_LOG $BRIDGE_LOG $SPDK_SETUP_LOG $BDEV_LOG $ENGINE_LOG"
+echo "Logs: $BASE_LOG $BRIDGE_LOG $SPDK_SETUP_LOG $BDEV_LAT_LOG $BDEV_MID_LOG $BDEV_IOPS_LOG $ENGINE_LOG"
 if [ -f "$BUILD_LOG" ]; then
     echo "Build log: $BUILD_LOG"
 fi
@@ -277,10 +368,14 @@ sudo mkdir -p "$X" "$C"
 : > "$BASE_LOG"
 : > "$BRIDGE_LOG"
 : > "$SPDK_SETUP_LOG"
-: > "$BDEV_LOG"
+: > "$BDEV_LAT_LOG"
+: > "$BDEV_MID_LOG"
+: > "$BDEV_IOPS_LOG"
 : > "$ENGINE_LOG"
-: > x.json
-: > fuse.json
+for _qd in 1 "$IODEPTH_MID" "$IODEPTH"; do
+    : > "x_qd${_qd}.json"
+    : > "fuse_qd${_qd}.json"
+done
 
 echo "[Stage 0] Sanitize and reset SPDK"
 sudo wipefs -a "$D" >> "$BASE_LOG" 2>&1
@@ -292,12 +387,18 @@ if ! sudo mount "$D" "$X" >> "$BASE_LOG" 2>&1; then
     sudo mount "$D" "$X" >> "$BASE_LOG" 2>&1
 fi
 sudo chown "$USER":"$USER" "$X"
-sudo fio --name=base --directory="$X" --rw=randrw --bs="$BS" --size="$SIZE" --direct=1 --iodepth="$IODEPTH" --runtime="$RUNTIME" --time_based --group_reporting --output-format=json --output=x.json >> "$BASE_LOG" 2>&1
+for _qd in 1 "$IODEPTH_MID" "$IODEPTH"; do
+    echo "  [Stage 1] Kernel fio QD=$_qd"
+    sudo fio --name=base --directory="$X" --rw=randrw --bs="$BS" --size="$SIZE" \
+        --ioengine=libaio --direct=1 --iodepth="$_qd" \
+        --runtime="$RUNTIME" --time_based --group_reporting \
+        --output-format=json --output="x_qd${_qd}.json" >> "$BASE_LOG" 2>&1
+done
 sudo umount -l "$X" >> "$BASE_LOG" 2>&1
 
 echo "[Stage 2] User-space bridge fio (strict readiness probe)"
 HUGEMEM=2048 sudo -E bash "$SPDK_SETUP" >> "$SPDK_SETUP_LOG" 2>&1
-sudo ./build/dataplane-emu -m "$C" -b -k > "$ENGINE_LOG" 2>&1 &
+sudo ./build/dataplane-emu -m "$C" -d "$D" -b -k > "$ENGINE_LOG" 2>&1 &
 ENGINE_PID=$!
 
 ready=0
@@ -332,30 +433,94 @@ if [ "$BRIDGE_SIZE_BYTES" -gt "$BRIDGE_FILE_BYTES" ]; then
 fi
 echo "Bridge fio size: ${BRIDGE_SIZE_BYTES} bytes (file capacity: ${BRIDGE_FILE_BYTES})"
 
-sudo fio --name=fuse --filename="$C/nvme_raw_0" --rw=randrw --bs="$BS" --size="$BRIDGE_SIZE_BYTES" --direct=1 --iodepth="$IODEPTH" --runtime="$RUNTIME" --time_based --group_reporting --output-format=json --output=fuse.json >> "$BRIDGE_LOG" 2>&1
+sudo fio --name=fuse --filename="$C/nvme_raw_0" --rw=randrw --bs="$BS" --size="$BRIDGE_SIZE_BYTES" \
+    --ioengine=libaio --direct=1 --iodepth=1 \
+    --runtime="$RUNTIME" --time_based --group_reporting \
+    --output-format=json --output=fuse_qd1.json >> "$BRIDGE_LOG" 2>&1
+for _qd in "$IODEPTH_MID" "$IODEPTH"; do
+    echo "  [Stage 2] FUSE fio QD=$_qd"
+    sudo fio --name=fuse --filename="$C/nvme_raw_0" --rw=randrw --bs="$BS" --size="$BRIDGE_SIZE_BYTES" \
+        --ioengine=libaio --direct=1 --iodepth="$_qd" \
+        --runtime="$RUNTIME" --time_based --group_reporting \
+        --output-format=json --output="fuse_qd${_qd}.json" >> "$BRIDGE_LOG" 2>&1
+done
 
-XERR=$(jq -r '(.jobs[0].error//0)' x.json | awk '{print int($1+0)}')
-FERR=$(jq -r '(.jobs[0].error//0)' fuse.json | awk '{print int($1+0)}')
-if [ "$XERR" -ne 0 ] || [ "$FERR" -ne 0 ]; then
-    echo "fio error detected (baseline=$XERR bridge=$FERR)"
+# Validate all fio runs
+for _qd in 1 "$IODEPTH_MID" "$IODEPTH"; do
+    XERR=$(jq -r '(.jobs[0].error//0)' "x_qd${_qd}.json" | awk '{print int($1+0)}')
+    FERR=$(jq -r '(.jobs[0].error//0)' "fuse_qd${_qd}.json" | awk '{print int($1+0)}')
+    if [ "$XERR" -ne 0 ] || [ "$FERR" -ne 0 ]; then
+        echo "fio error at QD=$_qd (baseline=$XERR bridge=$FERR)"
+        exit 1
+    fi
+done
+
+# Kill the bridge engine and reset SPDK before Stage 3
+if [ -n "${ENGINE_PID:-}" ]; then
+    sudo kill -TERM "$ENGINE_PID" >/dev/null 2>&1 || true
+    wait "$ENGINE_PID" 2>/dev/null || true
+    ENGINE_PID=""
+fi
+sudo pkill -9 -x dataplane-emu >/dev/null 2>&1 || true
+sudo umount -l "$C" >/dev/null 2>&1 || true
+sudo -E bash "$SPDK_SETUP" reset >> "$SPDK_SETUP_LOG" 2>&1
+
+# Wait for the NVMe block device to reappear after SPDK reset
+stage3_ready=0
+for _ in $(seq 1 15); do
+    if [ -b "$D" ]; then
+        stage3_ready=1
+        break
+    fi
+    sleep 1
+done
+if [ "$stage3_ready" -ne 1 ]; then
+    echo "Block device $D did not reappear after SPDK reset"
     exit 1
 fi
 
-echo "[Stage 3] Real SPDK bdevperf run (no synthetic bypass math)"
-ensure_userspace_stage3_driver
-BDEV_CFG="/tmp/arm_neoverse_bdevperf.json"
-cat > "$BDEV_CFG" <<EOF
+
+# ---------------------------------------------------------------------------
+# Stage 3: SPDK bdevperf
+# ---------------------------------------------------------------------------
+# On Azure (no IOMMU groups), PCIe passthrough is blocked.  Use SPDK's
+# bdev_aio backend which runs the I/O through SPDK's lock-free reactor
+# framework while the kernel provides the AIO syscall layer.  If SPDK was
+# rebuilt with io_uring (ensure_spdk_uring above), bdev_uring is preferred.
+#
+# On AWS (IOMMU groups present), use the standard PCIe passthrough path.
+# ---------------------------------------------------------------------------
+HAS_IOMMU=0
+if [ -d /sys/kernel/iommu_groups ] && [ -n "$(ls -A /sys/kernel/iommu_groups 2>/dev/null)" ]; then
+    HAS_IOMMU=1
+fi
+
+if [ "$HAS_IOMMU" -eq 0 ]; then
+    # Auto-detect the device's logical sector size for bdev_aio
+    DEV_BLOCK_SIZE=$(sudo blockdev --getss "$D" 2>/dev/null || echo 512)
+
+    # Prefer bdev_uring if SPDK was built with io_uring support
+    SPDK_CONFIG_MK="./spdk/mk/config.mk"
+    USE_URING=0
+    if [ -f "$SPDK_CONFIG_MK" ] && grep -q 'CONFIG_URING?=y' "$SPDK_CONFIG_MK" 2>/dev/null; then
+        USE_URING=1
+    fi
+
+    if [ "$USE_URING" -eq 1 ]; then
+        echo "[Stage 3] Azure: SPDK bdevperf via bdev_uring (io_uring reactor path)"
+        BDEV_CFG="/tmp/arm_neoverse_bdevperf.json"
+        cat > "$BDEV_CFG" <<EOF
 {
   "subsystems": [
     {
       "subsystem": "bdev",
       "config": [
         {
-          "method": "bdev_nvme_attach_controller",
+          "method": "bdev_uring_create",
           "params": {
-            "name": "Nvme0",
-            "trtype": "PCIe",
-            "traddr": "$TARGET_BDF"
+            "name": "UringNvme0",
+            "filename": "$D",
+            "block_size": $DEV_BLOCK_SIZE
           }
         }
       ]
@@ -363,41 +528,192 @@ cat > "$BDEV_CFG" <<EOF
   ]
 }
 EOF
+    else
+        echo "[Stage 3] Azure: SPDK bdevperf via bdev_aio (SPDK reactor + kernel AIO)"
+        BDEV_CFG="/tmp/arm_neoverse_bdevperf.json"
+        cat > "$BDEV_CFG" <<EOF
+{
+  "subsystems": [
+    {
+      "subsystem": "bdev",
+      "config": [
+        {
+          "method": "bdev_aio_create",
+          "params": {
+            "name": "AioNvme0",
+            "filename": "$D",
+            "block_size": $DEV_BLOCK_SIZE
+          }
+        }
+      ]
+    }
+  ]
+}
+EOF
+    fi
 
-if ! sudo "$BDEVPERF_BIN" -c "$BDEV_CFG" -q "$IODEPTH" -o 4096 -w randrw -M "$RWMIXREAD" -t "$RUNTIME" > "$BDEV_LOG" 2>&1; then
-        echo "bdevperf stage failed"
-        tail -n 120 "$BDEV_LOG"
+    echo "[Stage 3a] SPDK bdevperf — Latency run (QD=1)"
+    if ! sudo LD_LIBRARY_PATH="$SPDK_LD_PATH" "$BDEVPERF_BIN" -c "$BDEV_CFG" -q 1 -o 4096 -w randrw -M "$RWMIXREAD" -t "$RUNTIME" > "$BDEV_LAT_LOG" 2>&1; then
+        echo "bdevperf latency run failed"
+        tail -n 60 "$BDEV_LAT_LOG"
+    fi
+    echo "[Stage 3m] SPDK bdevperf — Knee-of-curve run (QD=$IODEPTH_MID)"
+    if ! sudo LD_LIBRARY_PATH="$SPDK_LD_PATH" "$BDEVPERF_BIN" -c "$BDEV_CFG" -q "$IODEPTH_MID" -o 4096 -w randrw -M "$RWMIXREAD" -t "$RUNTIME" > "$BDEV_MID_LOG" 2>&1; then
+        echo "bdevperf mid-QD run failed"
+        tail -n 60 "$BDEV_MID_LOG"
+    fi
+    echo "[Stage 3b] SPDK bdevperf — Throughput run (QD=$IODEPTH)"
+    if ! sudo LD_LIBRARY_PATH="$SPDK_LD_PATH" "$BDEVPERF_BIN" -c "$BDEV_CFG" -q "$IODEPTH" -o 4096 -w randrw -M "$RWMIXREAD" -t "$RUNTIME" > "$BDEV_IOPS_LOG" 2>&1; then
+        echo "bdevperf throughput run failed"
+        tail -n 60 "$BDEV_IOPS_LOG"
+    fi
+else
+    echo "[Stage 3] Real SPDK bdevperf run (no synthetic bypass math)"
+    ensure_userspace_stage3_driver
+    BDEV_CFG="/tmp/arm_neoverse_bdevperf.json"
+    cat > "$BDEV_CFG" <<EOF
+{
+    "subsystems": [
+        {
+            "subsystem": "bdev",
+            "config": [
+                {
+                    "method": "bdev_nvme_attach_controller",
+                    "params": {
+                        "name": "Nvme0",
+                        "trtype": "PCIe",
+                        "traddr": "$TARGET_BDF"
+                    }
+                }
+            ]
+        }
+    ]
+}
+EOF
+    echo "[Stage 3a] SPDK bdevperf — Latency run (QD=1)"
+    if ! sudo LD_LIBRARY_PATH="$SPDK_LD_PATH" "$BDEVPERF_BIN" -c "$BDEV_CFG" -q 1 -o 4096 -w randrw -M "$RWMIXREAD" -t "$RUNTIME" > "$BDEV_LAT_LOG" 2>&1; then
+        echo "bdevperf latency run failed"
+        tail -n 60 "$BDEV_LAT_LOG"
         exit 1
-fi
-
-XL=$(jq -r '((.jobs[0].read.clat_ns.mean//0)+(.jobs[0].write.clat_ns.mean//0))/2000' x.json | awk '{printf "%.2f", $1+0}')
-XI=$(jq -r '(.jobs[0].read.iops//0)+(.jobs[0].write.iops//0)' x.json | awk '{printf "%.0f", $1+0}')
-FL=$(jq -r '((.jobs[0].read.clat_ns.mean//0)+(.jobs[0].write.clat_ns.mean//0))/2000' fuse.json | awk '{printf "%.2f", $1+0}')
-FI=$(jq -r '(.jobs[0].read.iops//0)+(.jobs[0].write.iops//0)' fuse.json | awk '{printf "%.0f", $1+0}')
-
-BI=$( (grep -Eo '([0-9]+\.?[0-9]*)[[:space:]]*IOPS' "$BDEV_LOG" | tail -n 1 | awk '{printf "%.0f", $1+0}') || true )
-BL=$( (grep -Eo '([0-9]+\.?[0-9]*)[[:space:]]*usec' "$BDEV_LOG" | tail -n 1 | awk '{printf "%.2f", $1+0}') || true )
-if [ -z "$BI" ] || [ "$BI" = "0" ] || [ -z "$BL" ] || [ "$BL" = "0.00" ]; then
-    TOTAL_NUMS=$( (grep -E '^[[:space:]]*Total[[:space:]]*:' "$BDEV_LOG" | tail -n 1 | grep -Eo '[0-9]+(\.[0-9]+)?') || true )
-    if [ -n "$TOTAL_NUMS" ]; then
-        [ -z "$BI" ] || [ "$BI" = "0" ] && BI=$(echo "$TOTAL_NUMS" | sed -n '1p' | awk '{printf "%.0f", $1+0}')
-        [ -z "$BL" ] || [ "$BL" = "0.00" ] && BL=$(echo "$TOTAL_NUMS" | sed -n '5p' | awk '{printf "%.2f", $1+0}')
+    fi
+    echo "[Stage 3m] SPDK bdevperf — Knee-of-curve run (QD=$IODEPTH_MID)"
+    if ! sudo LD_LIBRARY_PATH="$SPDK_LD_PATH" "$BDEVPERF_BIN" -c "$BDEV_CFG" -q "$IODEPTH_MID" -o 4096 -w randrw -M "$RWMIXREAD" -t "$RUNTIME" > "$BDEV_MID_LOG" 2>&1; then
+        echo "bdevperf mid-QD run failed"
+        tail -n 60 "$BDEV_MID_LOG"
+        exit 1
+    fi
+    echo "[Stage 3b] SPDK bdevperf — Throughput run (QD=$IODEPTH)"
+    if ! sudo LD_LIBRARY_PATH="$SPDK_LD_PATH" "$BDEVPERF_BIN" -c "$BDEV_CFG" -q "$IODEPTH" -o 4096 -w randrw -M "$RWMIXREAD" -t "$RUNTIME" > "$BDEV_IOPS_LOG" 2>&1; then
+        echo "bdevperf throughput run failed"
+        tail -n 120 "$BDEV_IOPS_LOG"
+        exit 1
     fi
 fi
-if [ -z "$BI" ]; then BI="N/A"; fi
-if [ -z "$BL" ]; then BL="N/A"; fi
 
-echo "=========================================================================="
+# ---------------------------------------------------------------------------
+# Parse results
+# ---------------------------------------------------------------------------
+parse_fio() {
+    local json="$1" field="$2"
+    case "$field" in
+        lat) jq -r '((.jobs[0].read.clat_ns.mean//0)+(.jobs[0].write.clat_ns.mean//0))/2000' "$json" | awk '{printf "%.2f", $1+0}' ;;
+        iops) jq -r '(.jobs[0].read.iops//0)+(.jobs[0].write.iops//0)' "$json" | awk '{printf "%.0f", $1+0}' ;;
+    esac
+}
+
+# Per-QD kernel numbers
+XL_1=$(parse_fio x_qd1.json lat);               XI_1=$(parse_fio x_qd1.json iops)
+XL_M=$(parse_fio "x_qd${IODEPTH_MID}.json" lat); XI_M=$(parse_fio "x_qd${IODEPTH_MID}.json" iops)
+XL_H=$(parse_fio "x_qd${IODEPTH}.json" lat);     XI_H=$(parse_fio "x_qd${IODEPTH}.json" iops)
+
+# Per-QD FUSE numbers
+FL_1=$(parse_fio fuse_qd1.json lat);               FI_1=$(parse_fio fuse_qd1.json iops)
+FL_M=$(parse_fio "fuse_qd${IODEPTH_MID}.json" lat); FI_M=$(parse_fio "fuse_qd${IODEPTH_MID}.json" iops)
+FL_H=$(parse_fio "fuse_qd${IODEPTH}.json" lat);     FI_H=$(parse_fio "fuse_qd${IODEPTH}.json" iops)
+
+# bdevperf: parse latency run (QD=1)
+parse_bdevperf() {
+    local log="$1" field="$2"
+    local val=""
+    # Total line format after stripping "...Total...:" prefix:
+    #   $1=IOPS  $2=MiB/s  $3=Fail/s  $4=TO/s  $5=AvgLat  $6=min  $7=max
+    local total
+    total=$(grep -E '^[[:space:]]*Total[[:space:]]*:' "$log" 2>/dev/null | tail -n 1 | sed 's/.*://' || true)
+    if [ -n "$total" ]; then
+        case "$field" in
+            iops) val=$(echo "$total" | awk '{printf "%.0f", $1+0}') ;;
+            lat)  val=$(echo "$total" | awk '{printf "%.2f", $5+0}') ;;
+        esac
+    fi
+    # Fallback: grep running output line
+    if [ -z "$val" ] || [ "$val" = "0" ] || [ "$val" = "0.00" ]; then
+        case "$field" in
+            iops) val=$( (grep -Eo '([0-9]+\.?[0-9]*)[[:space:]]*IOPS' "$log" | tail -n 1 | awk '{printf "%.0f", $1+0}') || true ) ;;
+            lat)  ;; # no fallback for latency — only the Total line is authoritative
+        esac
+    fi
+    echo "${val:-N/A}"
+}
+
+BL=$(parse_bdevperf "$BDEV_LAT_LOG" lat)
+BL_IOPS=$(parse_bdevperf "$BDEV_LAT_LOG" iops)
+BM_LAT=$(parse_bdevperf "$BDEV_MID_LOG" lat)
+BM_IOPS=$(parse_bdevperf "$BDEV_MID_LOG" iops)
+BI=$(parse_bdevperf "$BDEV_IOPS_LOG" iops)
+BI_LAT=$(parse_bdevperf "$BDEV_IOPS_LOG" lat)
+
+# ---------------------------------------------------------------------------
+# Scorecard
+# ---------------------------------------------------------------------------
+STAGE3_LABEL=""
+if [ "$HAS_IOMMU" -eq 0 ]; then
+    if [ "${USE_URING:-0}" -eq 1 ]; then
+        STAGE3_LABEL="bdev_uring (io_uring reactor)"
+    else
+        STAGE3_LABEL="bdev_aio (SPDK reactor + kernel AIO)"
+    fi
+else
+    STAGE3_LABEL="bdev_nvme ($STAGE3_DRIVER → PCIe)"
+fi
+
+echo ""
+echo "════════════════════════════════════════════════════════════════════════════"
 echo "  DETERMINISTIC SILICON DATA PLANE SCORECARD"
-echo "=========================================================================="
-echo "  Stage 3 driver: $STAGE3_DRIVER"
-printf "%-25s | %-12s | %-12s\n" "Architecture" "Latency (us)" "IOPS"
-echo "--------------------------------------------------------------------------"
-printf "%-25s | %-12s | %-12s\n" "1. Legacy Kernel" "$XL" "$XI"
-printf "%-25s | %-12s | %-12s\n" "2. User-Space Bridge" "$FL" "$FI"
-printf "%-25s | %-12s | %-12s\n" "3. Zero-Copy (bdevperf)" "$BL" "$BI"
-echo "=========================================================================="
-echo "Baseline log: $BASE_LOG"
-echo "Bridge log:   $BRIDGE_LOG"
-echo "SPDK log:     $SPDK_SETUP_LOG"
-echo "bdevperf log: $BDEV_LOG"
+echo "════════════════════════════════════════════════════════════════════════════"
+echo "  Config: bs=$BS  runtime=${RUNTIME}s  rwmix=$RWMIXREAD/$((100 - RWMIXREAD))  mid-QD=$IODEPTH_MID"
+echo "  Stage 3: $STAGE3_LABEL"
+echo "────────────────────────────────────────────────────────────────────────────"
+echo ""
+echo "  ┌─ Latency (QD=1) ──────────────────────────────────────────────────────┐"
+printf "  │ %-32s  %12s  %12s │\n" "Architecture" "Avg (μs)" "IOPS"
+echo "  │ ──────────────────────────────  ────────────  ──────────── │"
+printf "  │ %-32s  %12s  %12s │\n" "1. Kernel (XFS + fio)"         "$XL_1" "$XI_1"
+printf "  │ %-32s  %12s  %12s │\n" "2. User-Space Bridge (FUSE)"   "$FL_1" "$FI_1"
+printf "  │ %-32s  %12s  %12s │\n" "3. SPDK Zero-Copy (bdevperf)"  "$BL" "$BL_IOPS"
+echo "  └────────────────────────────────────────────────────────────────────────┘"
+echo ""
+echo "  ┌─ Knee-of-Curve (QD=$IODEPTH_MID) ────────────────────────────────────────────┐"
+printf "  │ %-32s  %12s  %12s │\n" "Architecture" "Avg (μs)" "IOPS"
+echo "  │ ──────────────────────────────  ────────────  ──────────── │"
+printf "  │ %-32s  %12s  %12s │\n" "1. Kernel (XFS + fio)"         "$XL_M" "$XI_M"
+printf "  │ %-32s  %12s  %12s │\n" "2. User-Space Bridge (FUSE)"   "$FL_M" "$FI_M"
+printf "  │ %-32s  %12s  %12s │\n" "3. SPDK Zero-Copy (bdevperf)"  "$BM_LAT" "$BM_IOPS"
+echo "  └────────────────────────────────────────────────────────────────────────┘"
+echo ""
+echo "  ┌─ Throughput (QD=$IODEPTH) ───────────────────────────────────────────────┐"
+printf "  │ %-32s  %12s  %12s │\n" "Architecture" "Avg (μs)" "IOPS"
+echo "  │ ──────────────────────────────  ────────────  ──────────── │"
+printf "  │ %-32s  %12s  %12s │\n" "1. Kernel (XFS + fio)"         "$XL_H" "$XI_H"
+printf "  │ %-32s  %12s  %12s │\n" "2. User-Space Bridge (FUSE)"   "$FL_H" "$FI_H"
+printf "  │ %-32s  %12s  %12s │\n" "3. SPDK Zero-Copy (bdevperf)"  "$BI_LAT" "$BI"
+echo "  └────────────────────────────────────────────────────────────────────────┘"
+echo ""
+echo "────────────────────────────────────────────────────────────────────────────"
+echo "  Logs:"
+echo "    Baseline:       $BASE_LOG"
+echo "    Bridge:         $BRIDGE_LOG"
+echo "    SPDK setup:     $SPDK_SETUP_LOG"
+echo "    bdevperf (lat): $BDEV_LAT_LOG"
+echo "    bdevperf (mid): $BDEV_MID_LOG"
+echo "    bdevperf (thr): $BDEV_IOPS_LOG"
+echo "════════════════════════════════════════════════════════════════════════════"

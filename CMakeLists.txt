@@ -46,15 +46,38 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(FUSE3 REQUIRED fuse3)
 
 # --- SPDK & DPDK Library Resolution ---
+option(WITH_SPDK "Enable SPDK storage backend (requires SPDK/DPDK build)" OFF)
+
 set(SPDK_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/spdk/build/lib")
 set(DPDK_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/spdk/dpdk/build/lib")
-link_directories(${SPDK_LIB_DIR} ${DPDK_LIB_DIR})
 
-set(SPDK_LIBS 
-    spdk_nvme spdk_env_dpdk rte_eal rte_mempool 
-    rte_ring rte_mbuf rte_telemetry rte_kvargs 
-    rte_net rte_ethdev rte_pci rte_bus_pci
-)
+if(WITH_SPDK)
+    message(STATUS "SPDK backend: ENABLED")
+
+    # Use pkg-config to resolve the full transitive dependency chain
+    # (spdk_nvme pulls in spdk_keyring, spdk_sock, spdk_json, etc.)
+    set(ENV{PKG_CONFIG_PATH}
+        "${SPDK_LIB_DIR}/pkgconfig:${DPDK_LIB_DIR}/pkgconfig:$ENV{PKG_CONFIG_PATH}")
+    pkg_check_modules(SPDK REQUIRED spdk_nvme spdk_env_dpdk)
+
+    # External NEON-optimised ISA-L (built by scripts/build_spdk.sh §3)
+    set(ISAL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/spdk/isa-l/install")
+    set(ISAL_CRYPTO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/spdk/isa-l-crypto/install")
+    set(ISAL_LIBS "")
+    if(EXISTS "${ISAL_DIR}/lib/libisal.a")
+        list(APPEND ISAL_LIBS "${ISAL_DIR}/lib/libisal.a")
+        include_directories("${ISAL_DIR}/include")
+        message(STATUS "ISA-L (NEON): ${ISAL_DIR}/lib/libisal.a")
+    endif()
+    if(EXISTS "${ISAL_CRYPTO_DIR}/lib/libisal_crypto.a")
+        list(APPEND ISAL_LIBS "${ISAL_CRYPTO_DIR}/lib/libisal_crypto.a")
+        include_directories("${ISAL_CRYPTO_DIR}/include")
+        message(STATUS "ISA-L Crypto: ${ISAL_CRYPTO_DIR}/lib/libisal_crypto.a")
+    endif()
+else()
+    message(STATUS "SPDK backend: DISABLED (emulator-only mode)")
+    set(ISAL_LIBS "")
+endif()
 
 # --- Target: Data Plane Emulator ---
 add_executable(dataplane-emu
@@ -64,6 +87,11 @@ add_executable(dataplane-emu
 )
 target_include_directories(dataplane-emu PRIVATE include "${CMAKE_CURRENT_SOURCE_DIR}/spdk/include" ${FUSE3_INCLUDE_DIRS})
 target_link_libraries(dataplane-emu PRIVATE project_options ${FUSE3_LIBRARIES} pthread dl)
+if(WITH_SPDK)
+    target_compile_definitions(dataplane-emu PRIVATE WITH_SPDK)
+    target_include_directories(dataplane-emu PRIVATE ${SPDK_INCLUDE_DIRS})
+    target_link_libraries(dataplane-emu PRIVATE ${SPDK_LINK_LIBRARIES} ${ISAL_LIBS} uuid numa ssl crypto stdc++fs)
+endif()
 
 # --- Target: Ring Test ---
 add_executable(dataplane-ring-test src/dataplane_ring.cpp)

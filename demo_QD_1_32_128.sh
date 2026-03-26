@@ -1,0 +1,1 @@
+ARM_NEOVERSE_DEMO_CONFIRM=YES DEMO_MID_IODEPTH=32 ./launch_arm_neoverse_demo_deterministic.sh

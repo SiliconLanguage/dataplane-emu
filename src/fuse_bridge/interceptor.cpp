@@ -3,20 +3,22 @@
 #include <fuse.h>
 #include <string.h>
 #include <errno.h>
+#include <unistd.h>
 #include <iostream>
 
 #include "interceptor.h"
-// Update the include path to match your new structure
 #include <dataplane_emu/sq_cq.hpp>
 using namespace dataplane_emu;
 
-// --- IMPORTANT ---
-// Replace 'SpdkSimulator' with the actual name of the class defined in your sq_cq.hpp
-//using BackendType = SqCqEmulator ; 
+// ---------------------------------------------------------------------------
+// FUSE context accessors
+// ---------------------------------------------------------------------------
+static FuseBridgeCtx* get_ctx() {
+    return static_cast<FuseBridgeCtx*>(fuse_get_context()->private_data);
+}
 
-// Helper to get our NVMe backend instance from the FUSE context
 static SqCqEmulator* get_backend() {
-    return static_cast<SqCqEmulator*>(fuse_get_context()->private_data);
+    return static_cast<SqCqEmulator*>(get_ctx()->engine);
 }
 
 // Intercepts 'stat' calls (e.g., when you run 'ls -l')
@@ -31,7 +33,11 @@ static int dp_getattr(const char *path, struct stat *stbuf, struct fuse_file_inf
     } else if (strcmp(path, "/nvme_raw_0") == 0) {
         stbuf->st_mode = S_IFREG | 0666;
         stbuf->st_nlink = 1;
-        stbuf->st_size = 1024 * 1024 * 1024; // Mocked to 1GB
+        FuseBridgeCtx* ctx = get_ctx();
+        stbuf->st_size = (ctx && ctx->blk_size > 0)
+                             ? ctx->blk_size
+                             : (off_t)(1024LL * 1024 * 1024);
+        stbuf->st_blksize = 4096;
         return 0;
     }
 
@@ -125,46 +131,42 @@ static int dp_open(const char *path, struct fuse_file_info *fi) {
  * costly atomic variables or cache-line bouncing.
  */
 
-constexpr uint32_t STDOUT_LOG_NTH = 1500;
-constexpr long BRANCH_UNLIKELY = 0;
-
 static int dp_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     if (strcmp(path, "/nvme_raw_0") != 0)
         return -ENOENT;
 
-    // 1. Extreme Fast Path: Kernel-optimized SIMD memset blocks all loop overhead
-    memset(buf, 'A', size);
+    FuseBridgeCtx* ctx = get_ctx();
+    int fd = ctx ? ctx->blk_fd : -1;
 
-    // 2. Sampled, Non-Flushing Telemetry
-    static thread_local uint32_t log_counter = 0;
-    
-    if (__builtin_expect(++log_counter >= STDOUT_LOG_NTH, BRANCH_UNLIKELY)) {
-        // String formatting only occurs explicitly within the cold telemetry branch!
-        std::cout << "[FUSE -> SQ/CQ] READ  path: " << path 
-                  << " | size: " << size 
-                  << " bytes | offset: " << offset << std::endl; // Flush explicitly!
-        log_counter = 0;
+    if (fd >= 0) {
+        // Real device I/O path: pread against the raw block device
+        ssize_t ret = pread(fd, buf, size, offset);
+        if (ret < 0)
+            return -errno;
+        return static_cast<int>(ret);
     }
 
+    // Fallback: memset (no device attached)
+    memset(buf, 'A', size);
     return size;
 }
 
-// Intercepts writes and routes them to the SQ/CQ implementation
 static int dp_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     if (strcmp(path, "/nvme_raw_0") != 0)
         return -ENOENT;
 
-    SqCqEmulator* backend = get_backend();
+    FuseBridgeCtx* ctx = get_ctx();
+    int fd = ctx ? ctx->blk_fd : -1;
 
-    static thread_local uint32_t log_counter = 0;
-    
-    if (__builtin_expect(++log_counter >= STDOUT_LOG_NTH, BRANCH_UNLIKELY)) {
-        std::cout << "[FUSE -> SQ/CQ] WRITE path: " << path 
-                  << " | size: " << size 
-                  << " bytes | offset: " << offset << std::endl; // Flush explicitly!
-        log_counter = 0;
+    if (fd >= 0) {
+        // Real device I/O path: pwrite against the raw block device
+        ssize_t ret = pwrite(fd, buf, size, offset);
+        if (ret < 0)
+            return -errno;
+        return static_cast<int>(ret);
     }
 
+    // Fallback: discard (no device attached)
     return size;
 }
 
@@ -211,6 +213,14 @@ static int dp_chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_inf
     return 0;
 }
 
+static void dp_destroy(void *private_data) {
+    FuseBridgeCtx* ctx = static_cast<FuseBridgeCtx*>(private_data);
+    if (ctx && ctx->blk_fd >= 0) {
+        close(ctx->blk_fd);
+        ctx->blk_fd = -1;
+    }
+}
+
 static struct fuse_operations dp_oper = {
     .getattr  = dp_getattr,
     .unlink   = dp_unlink,
@@ -221,10 +231,15 @@ static struct fuse_operations dp_oper = {
     .read     = dp_read,
     .write    = dp_write,
     .readdir  = dp_readdir,
+    .destroy  = dp_destroy,
 };
 
 // Start the FUSE loop
-int run_fuse_interceptor(int argc, char *argv[], void* backend_instance) {
-    std::cout << "Starting FUSE POSIX Interceptor..." << std::endl;
-    return fuse_main(argc, argv, &dp_oper, backend_instance);
+int run_fuse_interceptor(int argc, char *argv[], FuseBridgeCtx* ctx) {
+    std::cout << "Starting FUSE POSIX Interceptor...";
+    if (ctx && ctx->blk_fd >= 0)
+        std::cout << " (raw device fd=" << ctx->blk_fd
+                  << ", size=" << ctx->blk_size << ")";
+    std::cout << std::endl;
+    return fuse_main(argc, argv, &dp_oper, ctx);
 }

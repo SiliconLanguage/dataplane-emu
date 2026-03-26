@@ -1,16 +1,20 @@
 /**
- * @file hardware_optimization.h
- * @brief Graviton3 Architectural Notes
- * * This project is compiled with hardware-specific flags for AWS Graviton3:
- * * 1. Architecture: Armv8.4-A (via -mcpu=neoverse-v1)
- * 2. Atomics: Large System Extensions (LSE) enabled.
- * - Replaces traditional Load/Store-Exclusive loops (LDXR/STXR) with 
- * single-instruction atomics.
- * - Provides significant throughput gains for the dataplane-emu ring 
- * structures under high thread concurrency.
- * 3. SIMD: SVE (Scalable Vector Extension) support is available in hardware, 
- * though current logic primarily utilizes NEON/ASIMD for data movement.
- * * @note Requires GCC 11+ or Clang 14+ for full Neoverse-V1 support.
+ * @file main.cpp
+ * @brief dataplane-emu — Zero-copy NVMe emulator entry point
+ *
+ * ARM64 Architectural Notes (Graviton3 / Cobalt 100):
+ *   1. Architecture: Armv8.4-A (via -mcpu=neoverse-v1 / neoverse-n2)
+ *   2. Atomics: LSE (CASAL/LDADD) — single-instruction lock-free ops
+ *   3. SIMD: SVE/NEON for vectorised data movement
+ *
+ * SPDK integration:
+ *   When compiled with -DWITH_SPDK=ON, the -s flag activates the real
+ *   SPDK storage backend via dataplane_env::detect() + init_spdk().
+ *   The environment wrapper (spdk_env.hpp) handles:
+ *     AWS  → vfio-pci, trtype=PCIe, raw BDF addressing
+ *     Azure → uio_hv_generic, trtype=vdev, VMBus GUID addressing
+ *
+ * @note Requires GCC 11+ or Clang 14+ for full Neoverse support.
  */
 
 #ifndef FUSE_USE_VERSION
@@ -23,12 +27,20 @@
 #include <csignal>
 #include <exception>
 #include <string>
+#include <cstring>
 #include <vector>
 #include <unistd.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <linux/fs.h>
 #include <fuse.h>
 #include <sys/wait.h>
 #include <dataplane_emu/sq_cq.hpp>
 #include "fuse_bridge/interceptor.h"
+
+#ifdef WITH_SPDK
+#include <dataplane_emu/spdk_env.hpp>
+#endif
 
 // Reverting to global mountpoint for the signal handler to access
 static std::string global_mountpoint = "/mnt/virtual_nvme";
@@ -94,11 +106,16 @@ int main(int argc, char* argv[]) {
     int opt;
     bool run_benchmark = false;
     bool enable_kernel_bypass = false;
+    bool enable_spdk = false;
+    std::string blk_device_path;
 
-    while ((opt = getopt(argc, argv, "m:bk")) != -1) {
+    while ((opt = getopt(argc, argv, "m:d:bks")) != -1) {
         switch (opt) {
             case 'm':
                 global_mountpoint = optarg;
+                break;
+            case 'd':
+                blk_device_path = optarg;
                 break;
             case 'b':
                 run_benchmark = true;
@@ -106,13 +123,69 @@ int main(int argc, char* argv[]) {
             case 'k':
                 enable_kernel_bypass = true;
                 break;
+            case 's':
+                enable_spdk = true;
+                break;
             default:
-                std::cerr << "Usage: " << argv[0] << " [-m mountpoint] [-b] [-k]\n";
+                std::cerr << "Usage: " << argv[0]
+                          << " [-m mountpoint] [-d /dev/nvmeXnY] [-b] [-k] [-s]\n"
+                          << "  -m  FUSE mountpoint (default: /mnt/virtual_nvme)\n"
+                          << "  -d  Raw block device for FUSE bridge real I/O\n"
+                          << "  -b  Run lock-free ring benchmark\n"
+                          << "  -k  Enable FUSE kernel-bypass bridge\n"
+                          << "  -s  Enable SPDK storage backend "
+                             "(auto-detects AWS/Azure)\n";
                 return 1;
         }
     }
 
     std::signal(SIGINT, signal_handler);
+
+    // -----------------------------------------------------------------
+    // SPDK Environment Initialisation (compile-gated: -DWITH_SPDK=ON)
+    // -----------------------------------------------------------------
+    // When -s is passed, we detect the cloud environment (AWS Graviton
+    // or Azure Cobalt 100) and initialise SPDK before starting the
+    // emulator engine.
+    //
+    // Fail-fast contract:
+    //   - detect() throws std::runtime_error if the cloud is unknown,
+    //     the required kernel module is not loaded, or no device is found.
+    //   - init_spdk() calls std::abort() if spdk_env_init() fails.
+    //   - No silent degradation or kernel-space fallbacks.
+#ifdef WITH_SPDK
+    if (enable_spdk) {
+        std::cerr << "[main] SPDK mode requested — detecting environment...\n";
+        try {
+            auto env_cfg = dataplane_env::detect();
+
+            std::cerr << "[main] Cloud  : "
+                      << dataplane_env::cloud_provider_str(env_cfg.cloud) << "\n"
+                      << "[main] Transport: "
+                      << dataplane_env::transport_type_str(env_cfg.transport) << "\n"
+                      << "[main] Device : " << env_cfg.device_address << "\n"
+                      << "[main] Driver : " << env_cfg.expected_driver << "\n";
+
+            // init_spdk() populates spdk_env_opts, calls spdk_env_init(),
+            // and configures spdk_nvme_transport_id with the correct
+            // trtype (PCIe for AWS, vdev for Azure) and traddr
+            // (BDF or VMBus GUID respectively).
+            dataplane_env::init_spdk(env_cfg);
+
+            std::cerr << "[main] SPDK environment initialised successfully.\n";
+        } catch (const std::runtime_error& e) {
+            // Fail-fast: driver mismatch, missing module, or no device.
+            std::cerr << "[main] FATAL: " << e.what() << "\n";
+            return 1;
+        }
+    }
+#else
+    if (enable_spdk) {
+        std::cerr << "[main] FATAL: SPDK support not compiled in.\n"
+                  << "  Rebuild with: cmake -DWITH_SPDK=ON ..\n";
+        return 1;
+    }
+#endif
 
     using namespace dataplane_emu;
     SqCqEmulator engine;
@@ -151,6 +224,39 @@ int main(int argc, char* argv[]) {
     if (enable_kernel_bypass) {
         std::cout << "Starting kernel-bypass backend..." << std::endl;
 
+        // --- Open raw block device for real I/O (if -d was given) ---
+        FuseBridgeCtx fuse_ctx{};
+        fuse_ctx.engine   = &engine;
+        fuse_ctx.blk_fd   = -1;
+        fuse_ctx.blk_size = 0;
+
+        if (!blk_device_path.empty()) {
+            int fd = open(blk_device_path.c_str(), O_RDWR);
+            if (fd < 0) {
+                std::cerr << "FATAL: cannot open block device "
+                          << blk_device_path << ": "
+                          << strerror(errno) << std::endl;
+                engine.shutdown();
+                if (device_thread.joinable()) device_thread.join();
+                return 1;
+            }
+            uint64_t dev_bytes = 0;
+            if (ioctl(fd, BLKGETSIZE64, &dev_bytes) < 0) {
+                std::cerr << "FATAL: BLKGETSIZE64 failed on "
+                          << blk_device_path << ": "
+                          << strerror(errno) << std::endl;
+                close(fd);
+                engine.shutdown();
+                if (device_thread.joinable()) device_thread.join();
+                return 1;
+            }
+            fuse_ctx.blk_fd   = fd;
+            fuse_ctx.blk_size = static_cast<int64_t>(dev_bytes);
+            std::cerr << "[main] Block device " << blk_device_path
+                      << " opened (fd=" << fd
+                      << ", size=" << dev_bytes << " bytes)" << std::endl;
+        }
+
         std::vector<std::string> fuse_args_storage = {
             argv[0],
             "-f",
@@ -168,7 +274,7 @@ int main(int argc, char* argv[]) {
 
         std::cout << "Mounting FUSE bridge at " << global_mountpoint << "..." << std::endl;
         try {
-            rc = run_fuse_interceptor(fuse_argc, fuse_argv.data(), &engine);
+            rc = run_fuse_interceptor(fuse_argc, fuse_argv.data(), &fuse_ctx);
         } catch (const std::exception& ex) {
             std::cerr << "FUSE bridge terminated with exception: " << ex.what() << std::endl;
         } catch (...) {
