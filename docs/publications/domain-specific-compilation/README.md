@@ -1,6 +1,9 @@
 # The Convergence of Domain-Specific Compilation
+
 **Bridging LLM Siliconization and Infrastructure Hardware Offloading**
+
 **Author:** Ping Long, Principal Systems Architect, Lead Researcher, SiliconLanguage Foundry
+
 *Contact: [LinkedIn](https://www.linkedin.com/in/pinglong) | [GitHub](https://github.com/ping-long-github) | plongpingl@gmail.com*
 
 ---
