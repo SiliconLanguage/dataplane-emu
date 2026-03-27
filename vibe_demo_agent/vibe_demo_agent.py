@@ -293,32 +293,34 @@ def run_demo(script_path):
                 continue
 
             # ---------------------------------------------------------
-            # Live Scorecard — measures XFS + reads bypass from SHM
+            # Deterministic 3-stage benchmark scorecard
+            # Runs launch_arm_neoverse_demo_deterministic.sh and
+            # parses fio JSON + bdevperf logs.
             # ---------------------------------------------------------
             if line.startswith("# SCORECARD"):
-                # # SCORECARD [io_count] [timer_freq_hz]
+                # # SCORECARD [runtime_sec] [qd_mid]
                 parts = line.replace("# SCORECARD", "").strip().split()
-                io_count = int(parts[0]) if len(parts) > 0 else 10000
-                freq = int(parts[1]) if len(parts) > 1 else 1_000_000_000
+                runtime = int(parts[0]) if len(parts) > 0 else 10
+                qd_mid = int(parts[1]) if len(parts) > 1 else 16
 
-                def _xfs_log(msg):
-                    print(f"{YELLOW}[XFS] {msg}{RESET}")
+                print(f"\n{GREEN}[BENCHMARK] Launching deterministic 3-stage benchmark...{RESET}")
+                print(f"{GREEN}[BENCHMARK] Stages: Kernel fio \u2192 FUSE bridge fio \u2192 SPDK bdevperf{RESET}")
+                print(f"{GREEN}[BENCHMARK] QD sweep: 1, {qd_mid}  |  Runtime: {runtime}s per run{RESET}")
+                if SSH_HOST:
+                    print(f"{GREEN}[BENCHMARK] Remote execution: {SSH_HOST}{RESET}")
+                print()
 
-                print(f"\n{YELLOW}[PROBE] Measuring kernel XFS latency "
-                      f"({io_count} direct 4K reads on loopback XFS)...{RESET}")
-                xfs_us = measure_xfs_latency_us(
-                    io_count=io_count, verbose_cb=_xfs_log,
-                )
-                # Read bypass latency from telemetry SHM
-                bypass_us = 0.1  # fallback
+                from benchmark_runner import run_benchmark, render_deterministic_scorecard
+
                 try:
-                    _telemetry.open()
-                    snap = _telemetry.snapshot()
-                    bypass_us = snap.latency_us(freq)
-                    _telemetry.close()
-                except Exception:
-                    pass
-                print(render_live_scorecard(xfs_us, bypass_us))
+                    results = run_benchmark(
+                        executive_demo=True,
+                        runtime=runtime,
+                        qd_mid=qd_mid,
+                    )
+                    print(render_deterministic_scorecard(results))
+                except Exception as exc:
+                    print(f"{RED}[BENCHMARK] Failed: {exc}{RESET}")
                 continue
 
             if line.startswith("# VOICE:"):

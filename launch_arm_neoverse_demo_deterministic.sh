@@ -14,6 +14,14 @@ SIZE="${DEMO_SIZE:-4G}"
 RWMIXREAD="${DEMO_RWMIXREAD:-50}"
 SKIP_BUILD="${DEMO_SKIP_BUILD:-0}"
 
+# --executive-demo: trim QD sweep to 1 + 16 for executive review
+[[ "${1:-}" == "--executive-demo" ]] && IODEPTH=16 && IODEPTH_MID=16
+
+# Deduplicated QD list (avoids running QD=16 twice in executive-demo mode)
+_QD_LIST=(1)
+[[ "$IODEPTH_MID" -ne 1 ]] && _QD_LIST+=("$IODEPTH_MID")
+[[ "$IODEPTH" -ne "$IODEPTH_MID" && "$IODEPTH" -ne 1 ]] && _QD_LIST+=("$IODEPTH")
+
 # ---------------------------------------------------------------------------
 # Cloud provider detection (DMI-based, no network dependency)
 # ---------------------------------------------------------------------------
@@ -429,7 +437,7 @@ sudo mkdir -p "$X" "$C"
 : > "$BDEV_MID_LOG"
 : > "$BDEV_IOPS_LOG"
 : > "$ENGINE_LOG"
-for _qd in 1 "$IODEPTH_MID" "$IODEPTH"; do
+for _qd in "${_QD_LIST[@]}"; do
     : > "x_qd${_qd}.json"
     : > "fuse_qd${_qd}.json"
 done
@@ -447,7 +455,7 @@ if ! sudo mount "$D" "$X" >> "$BASE_LOG" 2>&1; then
     sudo mount "$D" "$X" >> "$BASE_LOG" 2>&1
 fi
 sudo chown "$USER":"$USER" "$X"
-for _qd in 1 "$IODEPTH_MID" "$IODEPTH"; do
+for _qd in "${_QD_LIST[@]}"; do
     echo "  [Stage 1] Kernel fio QD=$_qd"
     sudo fio --name=base --directory="$X" --rw=randrw --bs="$BS" --size="$SIZE" \
         --ioengine=libaio --direct=1 --iodepth="$_qd" \
@@ -502,7 +510,7 @@ sudo fio --name=fuse --filename="$C/nvme_raw_0" --rw=randrw --bs="$BS" --size="$
     --ioengine=libaio --direct=1 --iodepth=1 \
     --runtime="$RUNTIME" --time_based --group_reporting \
     --output-format=json --output=fuse_qd1.json >> "$BRIDGE_LOG" 2>&1
-for _qd in "$IODEPTH_MID" "$IODEPTH"; do
+for _qd in "${_QD_LIST[@]:1}"; do
     echo "  [Stage 2] FUSE fio QD=$_qd"
     sudo fio --name=fuse --filename="$C/nvme_raw_0" --rw=randrw --bs="$BS" --size="$BRIDGE_SIZE_BYTES" \
         --ioengine=libaio --direct=1 --iodepth="$_qd" \
@@ -511,7 +519,7 @@ for _qd in "$IODEPTH_MID" "$IODEPTH"; do
 done
 
 # Validate all fio runs
-for _qd in 1 "$IODEPTH_MID" "$IODEPTH"; do
+for _qd in "${_QD_LIST[@]}"; do
     XERR=$(jq -r '(.jobs[0].error//0)' "x_qd${_qd}.json" | awk '{print int($1+0)}')
     FERR=$(jq -r '(.jobs[0].error//0)' "fuse_qd${_qd}.json" | awk '{print int($1+0)}')
     if [ "$XERR" -ne 0 ] || [ "$FERR" -ne 0 ]; then
@@ -619,11 +627,13 @@ if ! sudo LD_LIBRARY_PATH="$SPDK_LD_PATH" "$BDEVPERF_BIN" -c "$BDEV_CFG" -q "$IO
     tail -n 60 "$BDEV_MID_LOG"
     exit 1
 fi
+if [ "$IODEPTH" -ne "$IODEPTH_MID" ]; then
 echo "[Stage 3b] SPDK bdevperf (uring) — Throughput run (QD=$IODEPTH)"
 if ! sudo LD_LIBRARY_PATH="$SPDK_LD_PATH" "$BDEVPERF_BIN" -c "$BDEV_CFG" -q "$IODEPTH" -o 4096 -w randrw -M "$RWMIXREAD" -t "$RUNTIME" > "$BDEV_IOPS_LOG" 2>&1; then
     echo "bdevperf (uring) throughput run failed"
     tail -n 120 "$BDEV_IOPS_LOG"
     exit 1
+fi
 fi
 
 else
@@ -712,11 +722,13 @@ if ! sudo LD_LIBRARY_PATH="$SPDK_LD_PATH" "$BDEVPERF_BIN" -c "$BDEV_CFG" -q "$IO
     tail -n 60 "$BDEV_MID_LOG"
     exit 1
 fi
+if [ "$IODEPTH" -ne "$IODEPTH_MID" ]; then
 echo "[Stage 3b] SPDK bdevperf — Throughput run (QD=$IODEPTH)"
 if ! sudo LD_LIBRARY_PATH="$SPDK_LD_PATH" "$BDEVPERF_BIN" -c "$BDEV_CFG" -q "$IODEPTH" -o 4096 -w randrw -M "$RWMIXREAD" -t "$RUNTIME" > "$BDEV_IOPS_LOG" 2>&1; then
     echo "bdevperf throughput run failed"
     tail -n 120 "$BDEV_IOPS_LOG"
     exit 1
+fi
 fi
 
 fi  # end of Stage 3 branch
@@ -810,6 +822,7 @@ printf "  │ %-32s  %12s  %12s │\n" "1. Kernel (XFS + fio)"         "$XL_M" "
 printf "  │ %-32s  %12s  %12s │\n" "2. User-Space Bridge (FUSE)"   "$FL_M" "$FI_M"
 printf "  │ %-32s  %12s  %12s │\n" "3. SPDK Zero-Copy (bdevperf)"  "$BM_LAT" "$BM_IOPS"
 echo "  └────────────────────────────────────────────────────────────────────────┘"
+if [ "$IODEPTH" -ne "$IODEPTH_MID" ]; then
 echo ""
 echo "  ┌─ Throughput (QD=$IODEPTH) ───────────────────────────────────────────────┐"
 printf "  │ %-32s  %12s  %12s │\n" "Architecture" "Avg (μs)" "IOPS"
@@ -818,6 +831,7 @@ printf "  │ %-32s  %12s  %12s │\n" "1. Kernel (XFS + fio)"         "$XL_H" "
 printf "  │ %-32s  %12s  %12s │\n" "2. User-Space Bridge (FUSE)"   "$FL_H" "$FI_H"
 printf "  │ %-32s  %12s  %12s │\n" "3. SPDK Zero-Copy (bdevperf)"  "$BI_LAT" "$BI"
 echo "  └────────────────────────────────────────────────────────────────────────┘"
+fi
 echo ""
 echo "────────────────────────────────────────────────────────────────────────────"
 echo "  Logs:"
