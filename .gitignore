@@ -64,3 +64,20 @@ scripts/spdk-aws/AWS_AUTOMATION_FINDINGS_*.md
 # Private .github content (synced to copilot-customizations repo only)
 .github/retrospective/
 .github/prompts/
+
+# Python virtual environment
+venv/
+__pycache__/
+*.pyc
+
+# Build artifacts
+build/
+bin/
+*.o
+dataplane-emu
+
+# Temporary Demo Audio
+/tmp/vibe_demo_voice_*.wav
+
+# OS junk
+.DS_Store
