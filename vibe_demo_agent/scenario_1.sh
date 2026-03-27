@@ -8,7 +8,7 @@ echo -e "\033[94m       >>> From Language To Monad on Chip <<<\033[0m\n"
 # VOICE: Welcome to the SiliconLanguage Foundry.
 # WAIT: 1
 # VOICE: Traditional AI infrastructure is bottlenecked by layers of OS abstraction.
-# VOICE: Our philosophy bridges that gap, compiling high-level, safe semantics directly into hardware state — what we call the Monad-On-Chip architecture.
+# VOICE: Our philosophy bridges that gap, compiling high-level, safe semantics directly into hardware state — what we call the MoC (Monad-on-Chip) architecture.
 
 echo -e "\033[90m[COMPILER]  Parsing SiliconLanguage functional semantics...\033[0m"
 sleep 0.8

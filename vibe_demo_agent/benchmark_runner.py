@@ -156,6 +156,28 @@ def ssh_run_line(host, cmd):
         return ""
 
 
+def _remote_missing_commands(host, commands):
+    """Return a list of commands missing on the remote host."""
+    missing = []
+    for command in commands:
+        check = ssh_run_line(host, f"command -v {command} >/dev/null 2>&1 && echo OK")
+        if check != "OK":
+            missing.append(command)
+    return missing
+
+
+def _validate_remote_benchmark_host(host):
+    """Fail early with a targeted message if the remote benchmark host is missing prerequisites."""
+    required = ["bash", "fio", "jq", "awk", "bc", "findmnt", "lsblk", "readlink", "grep", "timeout", "modprobe", "cmake", "make", "sudo"]
+    missing = _remote_missing_commands(host, required)
+    if missing:
+        missing_list = ", ".join(missing)
+        raise RuntimeError(
+            f"Remote benchmark host {host} is missing required commands: {missing_list}. "
+            "Install them on the Azure host before starting the scorecard demo."
+        )
+
+
 # ── Hardware metadata detection ───────────────────────────────────────
 
 def _detect_cpu_desc_local():
@@ -339,6 +361,8 @@ def _run_benchmark_local(executive_demo, runtime, qd_mid, skip_build, stage_cb):
 
 def _run_benchmark_remote(host, executive_demo, runtime, qd_mid, skip_build, stage_cb):
     """Run on a remote host via SSH with real-time stdout streaming."""
+    _validate_remote_benchmark_host(host)
+
     flag = " --executive-demo" if executive_demo else ""
     skip = "1" if skip_build else "0"
     remote_cmd = (
@@ -426,50 +450,98 @@ def _build_results(cloud, cloud_label, instance, disk_model,
 
 def render_deterministic_scorecard(results):
     """Render the enriched 2-box scorecard with hardware metadata header."""
-    W = 72  # inner width between │ delimiters (matches └─...─┘)
-    border = '\u2550' * (W + 4)
+    W = 76  # inner width between │ delimiters (increased for better spacing)
+    border = '═' * (W + 4)
     r = results
 
     def _box_top(title):
         fill = W - len(title) - 4
-        return f"  \u250c\u2500 {title} {'\u2500' * fill}\u2510"
+        return f"  ┌─ {CYAN}{title}{RESET} {'─' * fill}┐"
 
     def _box_bot():
-        return f"  \u2514{'\u2500' * W}\u2518"
+        return f"  └{'─' * W}┘"
 
-    def _row(col1, col2, col3):
-        raw = f" {col1:<32s}  {col2:>12s}  {col3:>12s}"
-        return f"  \u2502{raw.ljust(W)}\u2502"
+    def _row(col1, col2, col3, highlight=False):
+        # Format each column separately without ANSI in width calculations
+        col1_clean = f"{col1:<34s}"
+        col2_clean = f"{col2:>14s}"  
+        col3_clean = f"{col3:>14s}"
+        
+        # Apply highlighting after width formatting
+        col1_formatted = f"{GREEN}{col1_clean}{RESET}" if highlight else col1_clean
+        
+        # Build the row content 
+        content = f" {col1_formatted}  {col2_clean}  {col3_clean} "
+        
+        # Calculate padding based on visible content only (68 chars)
+        visible_content_length = 1 + 34 + 2 + 14 + 2 + 14 + 1  # 68
+        padding = W - visible_content_length
+        
+        return f"  │{content}{' ' * padding}│"
+
+    def _header_row():
+        content = f" {'Architecture':<34s}  {'Avg (μs)':>14s}  {'IOPS':>14s} "
+        padding = W - len(content)
+        return f"  │{content}{' ' * padding}│"
 
     def _sep():
-        raw = f" {'\u2500' * 30}  {'\u2500' * 12}  {'\u2500' * 12}"
-        return f"  \u2502{raw.ljust(W)}\u2502"
+        content = f" {'─' * 34}  {'─' * 14}  {'─' * 14} "
+        padding = W - len(content)
+        return f"  │{content}{' ' * padding}│"
 
-    def _data(n, label, sr):
-        lat = f"{sr.lat_us:.2f}" if sr.lat_us > 0 else "N/A"
-        iops = str(sr.iops) if sr.iops > 0 else "N/A"
-        return _row(f"{n}. {label}", lat, iops)
+    def _data(n, label, sr, is_best_lat=False, is_best_iops=False):
+        # Format latency with proper precision (no ANSI in data values) 
+        if sr.lat_us > 0:
+            lat = f"{sr.lat_us:.2f}" if sr.lat_us < 1000 else f"{sr.lat_us:.1f}"
+        else:
+            lat = "N/A"
+        
+        # Format IOPS with thousands separator (no ANSI in data values)
+        if sr.iops > 0:
+            iops = f"{sr.iops:,}"
+        else:
+            iops = "N/A"
+        
+        # Highlight best performance
+        highlight = is_best_lat or is_best_iops
+        label_text = f"{n}. {label}"
+        
+        return _row(label_text, lat, iops, highlight)
 
     def _qd_box(title, kernel, fuse, spdk):
+        # Determine best performers (excluding N/A values)
+        valid_results = [(kernel, "kernel"), (fuse, "fuse"), (spdk, "spdk")]
+        valid_lat = [(r.lat_us, name) for r, name in valid_results if r.lat_us > 0]
+        valid_iops = [(r.iops, name) for r, name in valid_results if r.iops > 0]
+        
+        best_lat = min(valid_lat)[1] if valid_lat else None
+        best_iops = max(valid_iops)[1] if valid_iops else None
+        
         return [
             _box_top(title),
-            _row("Architecture", "Avg (\u03bcs)", "IOPS"),
+            _header_row(),
             _sep(),
-            _data(1, "Kernel (XFS + fio)", kernel),
-            _data(2, "User-Space Bridge (FUSE)", fuse),
-            _data(3, "SPDK Zero-Copy (bdevperf)", spdk),
+            _data(1, "Kernel (XFS + fio)", kernel, 
+                 is_best_lat=(best_lat == "kernel"), 
+                 is_best_iops=(best_iops == "kernel")),
+            _data(2, "User-Space Bridge (FUSE)", fuse,
+                 is_best_lat=(best_lat == "fuse"), 
+                 is_best_iops=(best_iops == "fuse")),
+            _data(3, "SPDK Zero-Copy (bdevperf)", spdk,
+                 is_best_lat=(best_lat == "spdk"), 
+                 is_best_iops=(best_iops == "spdk")),
             _box_bot(),
         ]
 
-    lines = ["", border]
+    lines = ["", f"{CYAN}{border}{RESET}"]
     lines.append(
-        f"  {r.cpu_desc} | {r.instance_type} | SILICON DATA PLANE SCORECARD")
-    lines.append(f"  Target Drive: {r.disk_model}")
+        f"  {YELLOW}{r.cpu_desc}{RESET} | {YELLOW}{r.instance_type}{RESET} | {CYAN}SILICON DATA PLANE SCORECARD{RESET}")
+    lines.append(f"  {DIM}Target Drive:{RESET} {r.disk_model}")
     lines.append(
-        f"  Config: bs={r.bs}  runtime={r.runtime}s"
+        f"  {DIM}Config:{RESET} bs={r.bs}  runtime={r.runtime}s"
         f"  rwmix={r.rwmixread}/{100 - r.rwmixread}")
-    lines.append(f"  Stage 3: {r.stage3_label}")
-    lines.append(border)
+    lines.append(f"  {DIM}Stage 3:{RESET} {r.stage3_label}")
+    lines.append(f"{CYAN}{border}{RESET}")
     lines.append("")
     lines.extend(_qd_box(
         "Latency (QD=1)", r.kernel_qd1, r.fuse_qd1, r.spdk_qd1))
@@ -477,7 +549,7 @@ def render_deterministic_scorecard(results):
     lines.extend(_qd_box(
         f"Knee-of-Curve (QD={r.qd_mid})",
         r.kernel_qd_mid, r.fuse_qd_mid, r.spdk_qd_mid))
-    lines.append(border)
+    lines.append(f"{CYAN}{border}{RESET}")
     lines.append("")
 
     return "\n".join(lines)

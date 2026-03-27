@@ -23,4 +23,7 @@ fi
 clear
 
 # 3. Launch the agent
-python3 vibe_demo_agent.py scenario_1.sh
+python3 vibe_demo_agent.py scenario_1.sh \
+    --azure-host "${AZURE_HOST}" \
+    --aws-host "${AWS_HOST}" \
+    "$@"

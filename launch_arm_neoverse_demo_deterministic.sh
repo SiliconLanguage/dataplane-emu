@@ -13,14 +13,24 @@ BS="${DEMO_BS:-4k}"
 SIZE="${DEMO_SIZE:-4G}"
 RWMIXREAD="${DEMO_RWMIXREAD:-50}"
 SKIP_BUILD="${DEMO_SKIP_BUILD:-0}"
+MAX_STAGE="${DEMO_MAX_STAGE:-3}"
+
+echo "[DEBUG] Environment: DEMO_MAX_STAGE='$DEMO_MAX_STAGE', MAX_STAGE='$MAX_STAGE'"
+echo "[DEBUG] Arguments: $*"
 
 # --executive-demo: trim QD sweep to 1 + 16 for executive review
-[[ "${1:-}" == "--executive-demo" ]] && IODEPTH=16 && IODEPTH_MID=16
+if [[ "${1:-}" == "--executive-demo" ]]; then
+    IODEPTH=16
+    IODEPTH_MID=16
+    echo "[EXEC] Executive demo mode: QD sweep limited to 1, 16"
+fi
 
 # Deduplicated QD list (avoids running QD=16 twice in executive-demo mode)
 _QD_LIST=(1)
 [[ "$IODEPTH_MID" -ne 1 ]] && _QD_LIST+=("$IODEPTH_MID")
 [[ "$IODEPTH" -ne "$IODEPTH_MID" && "$IODEPTH" -ne 1 ]] && _QD_LIST+=("$IODEPTH")
+
+echo "[DEBUG] IODEPTH=$IODEPTH, IODEPTH_MID=$IODEPTH_MID, QD_LIST=${_QD_LIST[*]}"
 
 # ---------------------------------------------------------------------------
 # Cloud provider detection (DMI-based, no network dependency)
@@ -463,6 +473,14 @@ for _qd in "${_QD_LIST[@]}"; do
         --output-format=json --output="x_qd${_qd}.json" >> "$BASE_LOG" 2>&1
 done
 sudo umount -l "$X" >> "$BASE_LOG" 2>&1
+
+# Check if we should stop after Stage 1  
+echo "[DEBUG] MAX_STAGE=$MAX_STAGE, checking if <= 1"
+if [ "$MAX_STAGE" -le 1 ]; then
+    echo "[DEMO] Stopping after Stage 1 as requested (DEMO_MAX_STAGE=$MAX_STAGE)"
+    echo "[DEMO] Stage 1 kernel baseline complete - exiting before Stage 2"
+    exit 0
+fi
 
 echo "[Stage 2] User-space bridge fio (strict readiness probe)"
 # The FUSE bridge uses pread/pwrite against the raw block device directly;
