@@ -41,6 +41,13 @@ PURPLE = '\033[95m'
 RED = '\033[1;91m'
 RESET = '\033[0m'
 
+# ---------------------------------------------------------------------------
+# SSH Remote Execution — "Local Controller / Remote Execution" pattern
+# Set DEMO_SSH_HOST to run infrastructure commands on a remote Cobalt node
+# while keeping TTS audio and terminal visuals local.
+# ---------------------------------------------------------------------------
+SSH_HOST = os.environ.get('DEMO_SSH_HOST', '')
+
 _LOGO_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logo.sh')
 
 def print_logo():
