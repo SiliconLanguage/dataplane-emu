@@ -88,6 +88,7 @@ void SqCqEmulator::nvme_device_loop() {
             CQEntry& comp = cq_payloads[local_cq_tail % QUEUE_SIZE];
             comp.status = 0; 
             comp.sq_head_pointer = static_cast<uint16_t>(local_sq_head % 65536);
+            comp.complete_ts = read_hw_timestamp();
             local_cq_tail++;
         }
 
@@ -114,7 +115,7 @@ bool SqCqEmulator::submit_io(uint64_t target_lba) {
     }
 
     // Write the actual I/O command to the ring buffer
-    sq_payloads[current_sq_tail % QUEUE_SIZE] = SQEntry{1, target_lba, 4096};
+    sq_payloads[current_sq_tail % QUEUE_SIZE] = SQEntry{1, target_lba, 4096, read_hw_timestamp()};
 
     // Pattern: Shared Handover (Release)
     // Commit the data to memory before making the new tail visible to the Device core.
@@ -139,6 +140,11 @@ void SqCqEmulator::host_submit_and_poll(uint64_t target_lba) {
         if (current_cq_tail >= expected_cq_tail) {
             const CQEntry& comp = cq_payloads[(expected_cq_tail - 1) % QUEUE_SIZE];
             assert(comp.status == 0 && "I/O Failed!");
+            // Capture SQ→CQ round-trip latency in timer ticks.
+            const SQEntry& submitted = sq_payloads[(expected_cq_tail - 1) % QUEUE_SIZE];
+            last_latency_ticks.store(
+                comp.complete_ts - submitted.submit_ts,
+                std::memory_order_relaxed);
             break; 
         }
         

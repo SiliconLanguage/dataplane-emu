@@ -10,6 +10,7 @@
 #endif
 
 #include "dataplane_emu/intercept.hpp"
+#include "dataplane_emu/telemetry.hpp"
 
 #include <dlfcn.h>
 #include <fcntl.h>
@@ -31,6 +32,40 @@ namespace dataplane_intercept {
 // =========================================================================
 
 static constexpr uint32_t LOG_NTH = 1500;
+
+// =========================================================================
+// §T  Shared-Memory Telemetry Block (mmap'd by Python control plane)
+// =========================================================================
+
+static dataplane_telemetry::TelemetryBlock* g_telemetry = nullptr;
+
+static void dp_init_telemetry() noexcept {
+    namespace dt = dataplane_telemetry;
+    int fd = ::open(dt::TELEMETRY_SHM_PATH,
+                    O_RDWR | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return;
+
+    // Size the file to exactly one cache line.
+    if (::ftruncate(fd, static_cast<off_t>(sizeof(dt::TelemetryBlock))) < 0) {
+        ::close(fd);
+        return;
+    }
+
+    void* addr = ::mmap(nullptr, sizeof(dt::TelemetryBlock),
+                        PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    ::close(fd);
+    if (addr == MAP_FAILED) return;
+
+    g_telemetry = new (addr) dt::TelemetryBlock{};
+    g_telemetry->engine_alive.store(1, std::memory_order_relaxed);
+}
+
+static void dp_fini_telemetry() noexcept {
+    if (!g_telemetry) return;
+    g_telemetry->engine_alive.store(0, std::memory_order_relaxed);
+    ::munmap(g_telemetry, sizeof(dataplane_telemetry::TelemetryBlock));
+    g_telemetry = nullptr;
+}
 
 // =========================================================================
 // §5  Per-Thread SqCqEmulator Pool
@@ -87,6 +122,9 @@ void dp_init_trampolines() noexcept {
     g_trampoline.real_memcpy   = reinterpret_cast<memcpy_fn_t>(dlsym(RTLD_NEXT, "memcpy"));
     g_trampoline.real_memmove  = reinterpret_cast<memmove_fn_t>(dlsym(RTLD_NEXT, "memmove"));
     // Emulator threads are started lazily per-thread via dp_get_thread_emulator().
+
+    // Initialise shared-memory telemetry export for the Python control plane.
+    dp_init_telemetry();
 }
 
 void dp_fini() noexcept {
@@ -99,6 +137,9 @@ void dp_fini() noexcept {
         if (e.state.load(std::memory_order_relaxed) == FakeFdEntry::State::OPEN)
             e.state.store(FakeFdEntry::State::FREE, std::memory_order_release);
     }
+
+    // Tear down shared-memory telemetry.
+    dp_fini_telemetry();
 }
 
 // Configurable mount prefix; override via DATAPLANE_MOUNT_PREFIX env var.
@@ -262,6 +303,18 @@ static ssize_t dp_submit_sqcq(bool is_read, void* buf,
 
     // Submit SQEntry → device thread processes → poll CQ with acquire.
     emu->host_submit_and_poll(lba);
+
+    // Export latency + counters to the shared telemetry block.
+    if (g_telemetry) {
+        g_telemetry->last_latency_ticks.store(
+            emu->last_latency_ticks.load(std::memory_order_relaxed),
+            std::memory_order_relaxed);
+        if (is_read)
+            g_telemetry->total_read_ops.fetch_add(1, std::memory_order_relaxed);
+        else
+            g_telemetry->total_write_ops.fetch_add(1, std::memory_order_relaxed);
+        g_telemetry->seq.fetch_add(1, std::memory_order_relaxed);
+    }
 
     // Mock data fill post-completion (simulates DMA into user buffer).
     if (is_read)

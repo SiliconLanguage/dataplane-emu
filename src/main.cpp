@@ -32,10 +32,12 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <linux/fs.h>
 #include <fuse.h>
 #include <sys/wait.h>
 #include <dataplane_emu/sq_cq.hpp>
+#include <dataplane_emu/telemetry.hpp>
 #include "fuse_bridge/interceptor.h"
 
 #ifdef WITH_SPDK
@@ -213,35 +215,79 @@ int main(int argc, char* argv[]) {
     using namespace dataplane_emu;
     SqCqEmulator engine;
 
+    // -----------------------------------------------------------------
+    // Shared-Memory Telemetry (Pillar 4)
+    // -----------------------------------------------------------------
+    // Create the mmap'd telemetry file so the Python TelemetrySink can
+    // read live metrics regardless of whether LD_PRELOAD is active.
+    namespace dt = dataplane_telemetry;
+    dt::TelemetryBlock* telem = nullptr;
+    {
+        int tfd = ::open(dt::TELEMETRY_SHM_PATH,
+                         O_RDWR | O_CREAT | O_TRUNC, 0644);
+        if (tfd >= 0) {
+            if (::ftruncate(tfd, static_cast<off_t>(sizeof(dt::TelemetryBlock))) == 0) {
+                void* addr = ::mmap(nullptr, sizeof(dt::TelemetryBlock),
+                                    PROT_READ | PROT_WRITE, MAP_SHARED, tfd, 0);
+                if (addr != MAP_FAILED) {
+                    telem = new (addr) dt::TelemetryBlock{};
+                    telem->engine_alive.store(1, std::memory_order_relaxed);
+                }
+            }
+            ::close(tfd);
+        }
+    }
+
     // Start the simulated NVMe device in a background thread
     std::thread device_thread(&SqCqEmulator::nvme_device_loop, &engine);
 
     if (run_benchmark) {
         std::cout << "Starting kernel-bypass benchmark...\n";
 
-        // Host submits 1,000,000 I/O requests
-        for (uint64_t lba = 0; lba < 1000000; lba++) {
+        constexpr uint64_t IO_COUNT = 1'000'000;
+
+        // Host submits IO_COUNT I/O requests, updating telemetry on each.
+        for (uint64_t lba = 0; lba < IO_COUNT; lba++) {
             engine.host_submit_and_poll(lba);
+
+            // Update shared telemetry block for the Python control plane.
+            if (telem) {
+                telem->total_read_ops.store(lba + 1, std::memory_order_relaxed);
+                telem->last_latency_ticks.store(
+                    engine.last_latency_ticks.load(std::memory_order_relaxed),
+                    std::memory_order_relaxed);
+                telem->seq.fetch_add(1, std::memory_order_relaxed);
+            }
         }
 
-        std::cout << "Successfully submitted and polled 1,000,000 I/Os using lock-free atomics.\n";
+        std::cout << "Successfully submitted and polled "
+                  << IO_COUNT << " I/Os using lock-free atomics.\n";
     }
 
     if (!enable_kernel_bypass) {
-        std::cout << "Kernel-bypass bridge not enabled. Shutting down." << std::endl;
-        
-        // Pattern: Shared Handover (Release)
-        // Signal the device thread to stop its loop
-        engine.shutdown();
+        // Stay alive so the Python TelemetrySink can read telemetry.
+        // The signal handler (SIGINT) will call _exit() to break out.
+        std::cout << "Benchmark complete. Waiting for control plane signal..." << std::endl;
+        std::cout << "Execution complete." << std::endl;
 
-        // Ensure we wait for the device thread to finish any pending work 
-        // to avoid TSAN 'thread leak' warnings.
+        // Block until SIGINT (sent by EngineManager.stop()).
+        // The signal_handler calls _exit(0) directly, so this never returns
+        // normally — but we loop defensively in case of spurious wakeups.
+        while (true) {
+            pause();  // suspends until signal delivery
+        }
+
+        if (telem) {
+            telem->engine_alive.store(0, std::memory_order_relaxed);
+            ::munmap(telem, sizeof(dt::TelemetryBlock));
+        }
+
+        engine.shutdown();
         if (device_thread.joinable()) {
             device_thread.join();
         }
 
-        std::cout << "Execution complete." << std::endl;
-        return 0; // Immediate exit to capture accurate 'real' time
+        return 0;
     }
 
     if (enable_kernel_bypass) {
