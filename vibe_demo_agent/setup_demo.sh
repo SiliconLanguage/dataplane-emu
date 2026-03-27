@@ -20,6 +20,14 @@ if [ -z "$SPEECH_REGION" ]; then
     echo "SPEECH_REGION=\"$SPEECH_REGION\"" >> .env
 fi
 
+# 1. OS Dependency Check (Audio Routing)
+if ! command -v ffplay &> /dev/null; then
+    echo -e "${MAGENTA}[SYSTEM] ffplay not found. Installing ffmpeg for neural audio routing...${RESET}"
+    sudo apt update && sudo apt install -y ffmpeg
+else
+    echo -e "${GREEN}[SYSTEM] Audio dependencies verified (ffmpeg).${RESET}"
+fi
+
 echo -e "\n\033[96m[1/5] Creating fresh native WSL venv...\033[0m"
 rm -rf venv
 python3 -m venv venv
