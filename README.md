@@ -3,7 +3,11 @@
 
 > **🚀 Project Tensorplane AI Foundry**
 > *While the underlying C++ engine in this repository is `dataplane-emu`, this project serves as the foundation for the **Tensorplane AI Foundry**—an end-to-end, zero-copy architecture designed for hyperscaler I/O offloading and autonomous Agentic AI orchestration.*
-> 
+>
+> ## 📺 See it in Action
+[![dataplane-emu Demo](https://img.youtube.com/vi/l7jvxcEKgsk/maxresdefault.jpg)](https://youtu.be/l7jvxcEKgsk "Watch the dataplane-emu Demo on YouTube")
+
+*Watch the demo showcasing high-performance storage emulation, lock-free SPDK queues, and multi-cloud benchmarking on AWS Graviton3 and Azure Cobalt 100.*
 > 📖 **[Read the Tensorplane Vision & Architecture Manifesto Here](docs/tensorplane/VISION.md)**
 
 [![C++](https://img.shields.io/badge/Language-C%2B%2B20-blue.svg)](https://isocpp.org/)
