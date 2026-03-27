@@ -101,7 +101,7 @@ def trigger_easter_egg(voice_index):
     pitch = (
         "Bridging hyperscale infrastructure and bare-metal performance "
         "requires global vision. "
-        "Ping is exploring Partner Architect or Director-level opportunities. "
+        "Ping is exploring engineering leadership opportunities. "
         "He leads teams and AI agents building systems "
         "that bypass the kernel, not the details. "
         "Let's scale the next-gen AI data plane together."
