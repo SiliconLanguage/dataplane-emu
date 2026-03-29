@@ -204,6 +204,34 @@ g++ -O3 -Wall -std=c++17 -pthread src/dataplane_ring.cpp -o build/dataplane_ring
 export LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu:$LD_LIBRARY_PATH
 ```
 
+### Cloud Resource Management
+
+#### Stopping Cloud Instances
+To avoid unexpected billing, use the repository's native shutdown scripts that integrate with your existing environment configuration:
+
+**AWS Graviton (EC2) Shutdown:**
+```bash
+# Uses root .env file (same variables as start-graviton.ps1)
+# Requires: INSTANCE_ID and AWS_REGION
+bash scripts/spdk-aws/stop-graviton.sh
+```
+
+**Azure Cobalt (VM) Deallocation:**
+```bash
+# Uses scripts/spdk-azure/.env file (same as provision-arm-neoverse.sh)  
+# Requires: AZ_RESOURCE_GROUP and AZ_VM_NAME
+bash scripts/spdk-azure/deallocate-cobalt.sh
+```
+
+**Automated Azure Idle Shutdown:**
+The repository includes an enhanced auto-shutdown script that deallocates Azure VMs after 60 minutes of inactivity:
+```bash
+# Install as cron job on Azure VMs (runs every 15 minutes)
+(crontab -l 2>/dev/null; echo "*/15 * * * * /path/to/scripts/comm-linux/auto-shutdown.sh") | crontab -
+```
+
+> **Note:** These scripts use the same environment files as your provisioning workflow, ensuring consistent configuration. Create the appropriate `.env` files using the provided templates before running shutdown commands.
+
 ## Usage & Execution Modes
 
 ### 1. Zero-Copy Ring (ARM64 TBI Demonstration)
