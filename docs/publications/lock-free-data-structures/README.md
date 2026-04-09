@@ -5,7 +5,6 @@ Author: Ping Long, Chief Systems Architect, Lead Researcher, SiliconLanguage Fou
 *Contact: [LinkedIn](https://www.linkedin.com/in/pinglong) | [GitHub](https://github.com/ping-long-github) | plongpingl@gmail.com*
 
 ---
-
 ### **The Bare-Metal Pivot**
 
 This research explores hardware-software co-design to optimize high-performance data structures for ARM64 and RISC-V. By integrating weakly-ordered memory orders with zero-copy, kernel-bypassing frameworks, the study demonstrates significant latency reductions for high-volume workloads.
@@ -48,53 +47,54 @@ The **Store-Release (STLR)** instruction ensures that all memory accesses appear
 
 By replacing DMB ISH with LDAR and STLR in lock-free Single-Producer Single-Consumer (SPSC) and Multiple-Producer Multiple-Consumer (MPMC) queues, the hardware avoids draining the entire store buffer and stalling the pipeline.13 The combination of LDAR and STLR establishes a critical section that functions as a lightweight barrier, yielding massive throughput improvements on AWS Graviton 3 (Neoverse V1) architectures compared to their x86-64 equivalents.11
 
-C++
-
+```cpp
 // Advanced Lock-Free SPSC Queue for ARM64 using Acquire/Release Semantics  
-template \<typename T, size\_t Capacity\>  
+template <typename T, size_t Capacity>  
 class SPSCQueue {  
     // Aligned to 128 bytes to prevent Neoverse V1 destructive interference  
-    alignas(128) std::atomic\<size\_t\> head\_idx\_{0};  
-    alignas(128) std::atomic\<size\_t\> tail\_idx\_{0};  
-    alignas(128) T buffer\_\[Capacity\];
+    alignas(128) std::atomic<size_t> head_idx_{0};  
+    alignas(128) std::atomic<size_t> tail_idx_{0};  
+    alignas(128) T buffer_[Capacity];
 
 public:  
     bool enqueue(const T& item) {  
-        // Relaxed load: We are the only producer, so head\_idx\_ cannot change concurrently  
-        size\_t current\_head \= head\_idx\_.load(std::memory\_order\_relaxed);  
-        size\_t next\_head \= (current\_head \+ 1) % Capacity;
+        // Relaxed load: We are the only producer, so head_idx_ cannot change concurrently  
+        size_t current_head = head_idx_.load(std::memory_order_relaxed);  
+        size_t next_head = (current_head + 1) % Capacity;
 
         // Acquire load (LDAR): Ensure subsequent buffer writes are strictly ordered   
         // after we read the consumer's current tail position.  
-        if (next\_head \== tail\_idx\_.load(std::memory\_order\_acquire)) {  
+        if (next_head == tail_idx_.load(std::memory_order_acquire)) {  
             return false; // Queue is full  
         }
 
-        buffer\_\[current\_head\] \= item;
+        buffer_[current_head] = item;
 
         // Release store (STLR): Ensure the item write is globally visible   
         // before we publish the new head index.  
-        head\_idx\_.store(next\_head, std::memory\_order\_release);  
+        head_idx_.store(next_head, std::memory_order_release);  
         return true;  
     }
 
     bool dequeue(T& item) {  
-        size\_t current\_tail \= tail\_idx\_.load(std::memory\_order\_relaxed);
+        size_t current_tail = tail_idx_.load(std::memory_order_relaxed);
 
         // Acquire load (LDAR): Ensure we observe the producer's payload   
         // strictly after we observe the updated head index.  
-        if (current\_tail \== head\_idx\_.load(std::memory\_order\_acquire)) {  
+        if (current_tail == head_idx_.load(std::memory_order_acquire)) {  
             return false; // Queue is empty  
         }
 
-        item \= buffer\_\[current\_tail\];
+        item = buffer_[current_tail];
 
         // Release store (STLR): Ensure payload read is complete before  
         // consumer publishes the freed slot.  
-        tail\_idx\_.store((current\_tail \+ 1) % Capacity, std::memory\_order\_release);  
+        tail_idx_.store((current_tail + 1) % Capacity, std::memory_order_release);  
         return true;  
     }  
 };
+```
+
 
 ## **Top Byte Ignore (TBI) and PCIe DMA Addressing Boundaries**
 
@@ -169,24 +169,25 @@ The Zawrs mechanism integrates synchronously with the standard LR (Load-Reserved
 3. **Low-Power Stall:** The execution pipeline immediately suspends instruction fetching and forces the core into a transient, low-power stalled state, effectively halting dynamic power draw.35  
 4. **Hardware Wake-up:** The core remains dormant until another agent—be it a sibling hart, a PCIe DMA controller, or an accelerator device—performs a memory store that invalidates the registered reservation set cache line. The cache coherency protocol instantly signals the suspended core, automatically terminating the stall and resuming instruction execution at full speed without any operating system intervention.35
 
-Rust
+```rust
 
 // Rust implementation of RISC-V Zawrs lock-free consumer poll loop  
-\#\[inline(always)\]  
-pub unsafe fn wait\_on\_address\_zawrs(addr: \*const u32, expected: u32) {  
-    core::arch::asm\!(  
+#[inline(always)]  
+pub unsafe fn wait_on_address_zawrs(addr: *const u32, expected: u32) {  
+    core::arch::asm!(  
         "1:",  
         "lr.w t0, ({0})",       // Load-Reserved: Set reservation set on queue index  
-        "beq t0, {1}, 2f",      // If value\!= expected, data is ready; break loop  
+        "beq t0, {1}, 2f",      // If value != expected, data is ready; break loop  
         "wrs.nto",              // Hardware stall until reservation set is invalidated  
         "j 1b",                 // Wake-up triggered; re-evaluate condition  
         "2:",  
         in(reg) addr,  
         in(reg) expected,  
-        out("t0") \_,  
+        out("t0") _,  
         options(nostack)  
     );  
 }
+```
 
 Unlike yielding to the operating system or invoking an ecall, WRS.NTO does not trap to the hypervisor or the Linux scheduler.35 There is zero context-switch overhead. The RISC-V Zawrs extension enables bare-metal polling latency profiles while operating with the energy efficiency traditionally associated with slow, interrupt-driven architectures.35
 
