@@ -1,19 +1,13 @@
 ### **Architecting the Monadic Data Plane: High-Performance Integration of GPUDirect, DPDK gpudev, and BlueField SNAP for Zero-Host-CPU Emulation**
 
-### ---
-
 **Author**: Ping Long, Chief Systems Architect, Lead Researcher, SiliconLanguage Foundry  
 ***Contact**: [LinkedIn](https://www.linkedin.com/in/pinglong) | [GitHub](https://github.com/ping-long-github) | plongpingl@gmail.com*
-
-### ---
 
 **Abstract**
 
 The modern landscape of hyperscale infrastructure is undergoing a fundamental transformation as artificial intelligence (AI) workloads—particularly large language models (LLMs)—outpace the capabilities of traditional CPU-centric I/O architectures. In response, this research presents the Monadic Data Plane, a "Zero-Host-CPU" paradigm where data movement and transformation occur entirely within the peripheral domain. By orchestrating NVIDIA GPUDirect RDMA, the Data Plane Development Kit (DPDK) gpudev library, and NVIDIA BlueField SNAP, this architecture reduces the host CPU to a mere configuration agent.
 
 To achieve a polymorphic, hardware-agnostic design, the architecture elevates its scale-out transport layer by adopting Libfabric (OFI), while utilizing NVIDIA's NVLink fabric for sub-microsecond, intra-node peer-to-peer scaling. Crucially, these asynchronous NVMe storage events and remote network transfers are unified under a novel C++23 "Monadic Sovereign Control Plane," which utilizes functional design patterns (such as std::expected and std::execution) for lock-free, predictive state management. Ultimately, this framework provides a highly deterministic, hardware-accurate blueprint capable of directly offloading massive KV caches and model activations to NVMe storage, effectively circumventing the GPU memory wall in next-generation scale-out AI infrastructure.
-
-### ---
 
 **Evolution of High-Performance Data Movement and Market Landscape**
 
@@ -92,8 +86,6 @@ The mathematical model for polling efficiency in this context can be expressed b
 η \= H / (H \+ M) \[19\]
 
 High-performance emulators must maximize η by ensuring that packet bursts are sized to match the GPU's warp occupancy, minimizing idle cycles.
-
-### ---
 
 **Elevating the Data Plane: Libfabric (OFI) as the Universal Transport Abstraction**
 
@@ -263,8 +255,6 @@ class SpscRingBuffer {
 
 Memory ordering is equally critical. The producer must use std::memory\_order\_release when storing the updated tail index to ensure that the data written to the buffer is visible to the consumer. \[33, 35\] Conversely, the consumer must use std::memory\_order\_acquire when loading the tail index to establish a "happens-before" relationship with the producer's write. \[33, 36, 37\]
 
-### ---
-
 **Deep Dive into libcufile.so and GPUDirect Storage**
 
 NVIDIA GPUDirect Storage (GDS) is the key technology for moving data between storage and GPU memory without CPU mediation. \[4, 38\] The libcufile.so library provides the C API for this direct path.
@@ -290,8 +280,6 @@ The cuFileBufRegister operation is a high-latency control-plane task that should
 A critical insight for the architect is the handling of DMA-BUF failure. Modern DOCA and GPUNetIO samples use DMA-BUF as the primary method for mapping GPU memory, but they must implement a fallback to nvidia-peermem or host-memory bounce buffers if the kernel does not support the modern direct path. \[9, 10\]
 
 In a hardware-accurate emulator, these fallbacks must be explicitly modeled. If dataplane\_emu detects that the direct path is unavailable, it should either fail (to preserve the "monadic" guarantee) or log the increased latency and CPU utilization caused by the host-memory copy, as this transition changes the performance profile of the system from microsecond-scale to millisecond-scale. \[4, 8\]
-
-### ---
 
 **Synthesized C++ Class Blueprint for dataplane\_emu**
 
@@ -363,8 +351,6 @@ private:
     }  
 };
 
-### ---
-
 **Hardware-Accuracy and Emulation Performance Modeling**
 
 A primary objective of dataplane\_emu is hardware-accuracy. This requires modeling the nuances of the PCIe interconnect and the DPU's internal execution units.
@@ -381,8 +367,6 @@ While the Monadic Data Plane targets zero-host-CPU, it is important to recognize
 
 The DPU's performance is often limited by its "Accurate Send Scheduling" and the MTU size of the uplink. \[10, 39\] For best performance, the emulator should assume a 4096-byte MTU and model the DPU's ability to handle asynchronous I/O commands in parallel across its internal cores. \[21, 39\]
 
-### ---
-
 **Conclusion and Strategic Recommendations**
 
 The synthesis of GPUDirect, DPDK gpudev, and BlueField SNAP into a Monadic Data Plane represents the apex of current systems engineering for AI and cybersecurity. This architecture effectively disaggregates compute and I/O, allowing the host CPU to focus on high-level orchestration while the data path operates at wire speed.
@@ -395,8 +379,6 @@ To successfully build dataplane\_emu, the following recommendations are proposed
 4. **Simulate Interconnect Contention:** To achieve true "hardware-accuracy," the emulator must include a model for PCIe bus contention, particularly in multi-GPU systems where NCCL traffic may compete with storage I/O for the same PCIe switch bandwidth. \[2, 7\]
 
 The Monadic Data Plane is not merely a performance optimization; it is a fundamental shift toward an autonomous, hardware-accelerated infrastructure. By implementing these research-backed APIs and architectural patterns, dataplane\_emu will provide a robust platform for developing the next generation of hyperscale applications.
-
-### ---
 
 **References**
 
