@@ -68,9 +68,7 @@ flowchart TD
     linkStyle 7 stroke:#d9792b,stroke-width:3px,stroke-dasharray: 6 4
     linkStyle 8 stroke:#d9792b,stroke-width:3px,stroke-dasharray: 6 4
     linkStyle 9 stroke:#d9792b,stroke-width:3px,stroke-dasharray: 6 4
-    linkStyle 11 stroke:#888,stroke-width:2px,stroke-dasharray: 5 5
-    linkStyle 12 stroke:#888,stroke-width:2px,stroke-dasharray: 5 5
-```
+    linkStyle 12 stroke:#ffffff,stroke-width:3px,stroke-dasharray: 5 5
 
 ---
 
