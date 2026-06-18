@@ -15,9 +15,7 @@ flowchart TD
             C["4. VFS"]
             D["5. Filesystem (ext4 / xfs / btrfs)"]
             E["6. Page Cache"]
-            F["7. Block Layer"]
-            G["8. I/O Scheduler"]
-            H["9. Device Driver"]
+            F["7. Block Layer<br/>8. I/O Scheduler<br/>9. Device Driver"]
         end
 
         P1["Path A: Guest Standard Kernel I/O"]
@@ -44,9 +42,7 @@ flowchart TD
     D --> E
     E -->|"Cache HIT → user space"| B
     E -->|"Cache MISS"| F
-    F --> G
-    G --> H
-    H -->|"Guest Driver Commands over Virtual Bus"| T
+    F -->|"Guest Driver Commands over Virtual Bus"| T
 
     A -->|"Asynchronous Submission/Completion Queues"| J
     J -->|"Memory-Mapped I/O (MMIO) & DMA Kernel-Bypass I/O (Zero-Copy)"| T
@@ -69,11 +65,11 @@ flowchart TD
     style T fill:#4a104a,color:#ffccff,stroke:#ff00ff,stroke-width:4px
     style P1 fill:#1a3a1a,color:#d9ffd9,stroke:#4aaa4a,stroke-dasharray: 4 3
     style P2 fill:#4a2a1a,color:#ffe6cc,stroke:#d9792b,stroke-dasharray: 4 3
+    linkStyle 7 stroke:#d9792b,stroke-width:3px,stroke-dasharray: 6 4
+    linkStyle 8 stroke:#d9792b,stroke-width:3px,stroke-dasharray: 6 4
     linkStyle 9 stroke:#d9792b,stroke-width:3px,stroke-dasharray: 6 4
-    linkStyle 10 stroke:#d9792b,stroke-width:3px,stroke-dasharray: 6 4
-    linkStyle 11 stroke:#d9792b,stroke-width:3px,stroke-dasharray: 6 4
-    linkStyle 13 stroke:#888,stroke-width:2px,stroke-dasharray: 5 5
-    linkStyle 14 stroke:#888,stroke-width:2px,stroke-dasharray: 5 5
+    linkStyle 11 stroke:#888,stroke-width:2px,stroke-dasharray: 5 5
+    linkStyle 12 stroke:#888,stroke-width:2px,stroke-dasharray: 5 5
 ```
 
 ---
