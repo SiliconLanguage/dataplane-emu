@@ -1,4 +1,4 @@
-# Linux Block I/O Stack
+# End-to-End Storage Architecture: Emulation — Kernel vs. Bypass
 
 > **Note:** Mermaid does not support collapsible nodes. The diagram below shows the compact flow; expand each `▶ Details` section beneath it for per-layer descriptions.
 
@@ -19,6 +19,9 @@ flowchart TD
             G["8. I/O Scheduler"]
             H["9. Device Driver"]
         end
+
+        P1["Path A:<br/>Guest Standard<br/>Kernel I/O"]
+        P2["Path B:<br/>Guest Kernel-Bypass<br/>I/O (Zero-Copy)"]
     end
 
     subgraph VIRTUAL_HW["🌐 VIRTUAL INTERCONNECT BUS"]
@@ -50,8 +53,6 @@ flowchart TD
     T -->|"Virtual PCIe BAR writes, doorbells, SQEs"| QN
     QN -->|"Translated Host-Level I/O Requests"| I
 
-    P1["Path A: Guest Standard Kernel I/O"]
-    P2["Path B: Guest Kernel-Bypass I/O (Zero-Copy)"]
     P1 -.-> C
     P2 -.-> J
 
@@ -71,6 +72,8 @@ flowchart TD
     linkStyle 9 stroke:#d9792b,stroke-width:3px,stroke-dasharray: 6 4
     linkStyle 10 stroke:#d9792b,stroke-width:3px,stroke-dasharray: 6 4
     linkStyle 11 stroke:#d9792b,stroke-width:3px,stroke-dasharray: 6 4
+    linkStyle 13 stroke:#888,stroke-width:2px,stroke-dasharray: 5 5
+    linkStyle 14 stroke:#888,stroke-width:2px,stroke-dasharray: 5 5
 ```
 
 ---
