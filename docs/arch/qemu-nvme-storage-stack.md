@@ -20,12 +20,12 @@ flowchart TD
             H["9. Device Driver"]
         end
 
-        P1["Path A:<br/>Guest Standard<br/>Kernel I/O"]
-        P2["Path B:<br/>Guest Kernel-Bypass<br/>I/O (Zero-Copy)"]
+        P1["Path A: Guest Standard Kernel I/O"]
+        P2["Path B: Guest Kernel-Bypass I/O (Zero-Copy)"]
     end
 
     subgraph VIRTUAL_HW["🌐 VIRTUAL INTERCONNECT BUS"]
-        T["10. Virtual Transport / Interconnect Bus\n(vPCIe, vNVMe-oF, vSAS/SATA)"]
+        T["10. Virtual Transport / Interconnect Bus (vPCIe, vNVMe-oF, vSAS/SATA)"]
     end
 
     subgraph HOST["⚙️ HOST OS CONTEXT"]
@@ -35,7 +35,7 @@ flowchart TD
     end
 
     subgraph PHYSICAL_HW["🔩 PHYSICAL HARDWARE SPACE"]
-        I["13. Storage Device\n(NVMe SSD, NVMe-oF Target, Array)"]
+        I["13. Storage Device (NVMe SSD, NVMe-oF Target, Array)"]
     end
 
     A -->|"Guest-Context Synchronous Syscalls"| B
@@ -49,7 +49,7 @@ flowchart TD
     H -->|"Guest Driver Commands over Virtual Bus"| T
 
     A -->|"Asynchronous Submission/Completion Queues"| J
-    J -->|"Memory-Mapped I/O (MMIO) & DMA\nKernel-Bypass I/O (Zero-Copy)"| T
+    J -->|"Memory-Mapped I/O (MMIO) & DMA Kernel-Bypass I/O (Zero-Copy)"| T
     T -->|"Virtual PCIe BAR writes, doorbells, SQEs"| QN
     QN -->|"Translated Host-Level I/O Requests"| I
 
