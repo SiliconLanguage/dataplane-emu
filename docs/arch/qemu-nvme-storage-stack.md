@@ -12,7 +12,7 @@ flowchart TD
         end
 
         subgraph KERNEL["⚙️ GUEST KERNEL SPACE"]
-            C["<div style='text-align: left;'>4. VFS<br/>5. Filesystem (ext4 / xfs ...)</div>"]
+            C["<div style='text-align: left;'>4. VFS<br/>5. Filesystem</div>"]
             E["6. Page Cache"]
             F["<div style='text-align: left;'>7. Block Layer<br/>8. I/O Scheduler<br/>9. Device Driver</div>"]
         end
