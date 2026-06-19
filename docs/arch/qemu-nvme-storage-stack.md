@@ -12,9 +12,9 @@ flowchart TD
         end
 
         subgraph KERNEL["⚙️ GUEST KERNEL SPACE"]
-            C["4. VFS<br/>5. Filesystem (ext4 / xfs / btrfs)"]
+            C["<div style='text-align: left;'>4. VFS<br/>5. Filesystem (ext4 / xfs ...)</div>"]
             E["6. Page Cache"]
-            F["7. Block Layer<br/>8. I/O Scheduler<br/>9. Device Driver"]
+            F["<div style='text-align: left;'>7. Block Layer<br/>8. I/O Scheduler<br/>9. Device Driver</div>"]
         end
 
         P1["Path A: Guest Standard Kernel I/O"]
@@ -66,8 +66,8 @@ flowchart TD
     linkStyle 7 stroke:#d9792b,stroke-width:3px,stroke-dasharray: 6 4
     linkStyle 8 stroke:#d9792b,stroke-width:3px,stroke-dasharray: 6 4
     linkStyle 9 stroke:#d9792b,stroke-width:3px,stroke-dasharray: 6 4
-    linkStyle 10 stroke:#ffffff,stroke-width:3px,stroke-dasharray: 5 5
-    linkStyle 11 stroke:#ffffff,stroke-width:3px,stroke-dasharray: 5 5
+    linkStyle 10 stroke:#ffffff,stroke-width:4px,stroke-dasharray: 5 5
+    linkStyle 11 stroke:#ffffff,stroke-width:4px,stroke-dasharray: 5 5
 ```
 
 ---
