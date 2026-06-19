@@ -66,14 +66,15 @@ flowchart TD
     %% --- PATH B (YELLOW-GREEN) ---
     %% Indices 10, 11, 12, 13, 14
     PB -.-> N3
-    N1 -->|Asynchronous Submission and Completion Queues| N3
-    N3 -.->|To Emulated Virtual Bus| N10
+    N1 -->|Emu. Direct Memory Access| N3
+    N3 -->|To Emulated Virtual Bus| N10
     N10 == Virtual PCIe BAR writes, doorbells, SQEs ==> N12
     N12 == Translated Host Level I/O Requests ==> N13
     
     %% --- PATH C (GREEN) ---
-    %% Indices 15, 16, 17
+    %% Indices 15, 16, 17, 18
     PC -.-> N3
+    N1 -->|P2P Direct Memory Access| N3
     N3 === LBL_C
     LBL_C ==> N13
 
@@ -102,19 +103,19 @@ flowchart TD
     style N13 fill:#0f1115,color:#38bdf8,stroke:#38bdf8,stroke-width:2px
 
     %% Path A Links (Red)
-    linkStyle 4,6 stroke:#ff4d4d,stroke-width:2px,color:#ff4d4d
     linkStyle 3 stroke:#ff4d4d,stroke-width:2px,stroke-dasharray: 5 5,color:#ff4d4d
+    linkStyle 4,6,7,8,9 stroke:#ff4d4d,stroke-width:2px,color:#ff4d4d
     linkStyle 5 stroke:#ff4d4d,stroke-width:3px,color:#ff4d4d
-    linkStyle 7,8,9 stroke:#ff4d4d,stroke-width:2px,color:#ff4d4d
 
     %% Path B Links (Yellow-Green)
-    linkStyle 11 stroke:#ccff33,stroke-width:2px,color:#ccff33
-    linkStyle 10,12 stroke:#ccff33,stroke-width:2px,stroke-dasharray: 5 5,color:#ccff33
+    linkStyle 10 stroke:#ccff33,stroke-width:2px,stroke-dasharray: 5 5,color:#ccff33
+    linkStyle 11,12 stroke:#ccff33,stroke-width:2px,color:#ccff33
     linkStyle 13,14 stroke:#ccff33,stroke-width:3px,color:#ccff33
 
     %% Path C Links (Green)
     linkStyle 15 stroke:#00e676,stroke-width:2px,stroke-dasharray: 5 5,color:#00e676
-    linkStyle 16,17 stroke:#00e676,stroke-width:4px,color:#00e676
+    linkStyle 16 stroke:#00e676,stroke-width:2px,color:#00e676
+    linkStyle 17,18 stroke:#00e676,stroke-width:4px,color:#00e676
 ```
 
 ---
