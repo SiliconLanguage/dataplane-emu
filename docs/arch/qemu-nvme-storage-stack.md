@@ -3,11 +3,14 @@
 > **Note:** Mermaid does not support collapsible nodes. The diagram below shows the compact flow; expand each `▶ Details` section beneath it for per-layer descriptions.
 
 ```mermaid
+%%{init: {'theme': 'dark'}}%%
 flowchart TD
     subgraph GUEST["🛡️ GUEST OS VM"]
         subgraph USER["🖥️ GUEST USER SPACE"]
+            P1["Path A: Guest Standard Kernel I/O"]
             A["1. Application"]
             B["2. POSIX API / glibc"]
+            P2["Path B: Guest Kernel-Bypass I/O (Zero-Copy)"]
             J["3. User-Space Polled-Mode Driver (e.g., SPDK)"]
         end
 
@@ -16,9 +19,6 @@ flowchart TD
             E["6. Page Cache"]
             F["<div style='text-align: left;'>7. Block Layer<br/>8. I/O Scheduler<br/>9. Device Driver</div>"]
         end
-
-        P1["Path A: Guest Standard Kernel I/O"]
-        P2["Path B: Guest Kernel-Bypass I/O (Zero-Copy)"]
     end
 
     subgraph VIRTUAL_HW["🌐 VIRTUAL INTERCONNECT BUS"]
