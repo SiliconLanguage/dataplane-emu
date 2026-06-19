@@ -35,19 +35,19 @@ flowchart TD
         I["13. Storage Device (NVMe SSD, NVMe-oF Target, Array)"]
     end
 
-    A ==>|"Guest-Context Synchronous Syscalls"| B
-    B ==>|"Standard Kernel I/O Stack"| C
-    C ==> E
-    E ==>|"Cache HIT → user space"| B
-    E ==>|"Cache MISS"| F
-    F ==>|"Guest Driver Commands over Virtual Bus"| T
+    A -->|"Guest-Context Synchronous Syscalls"| B
+    B == Standard Kernel I/O Stack ==> C
+    C --> E
+    E -->|"Cache HIT → user space"| B
+    E -->|"Cache MISS"| F
+    F -->|"Guest Driver Commands over Virtual Bus"| T
 
-    A ==>|"Asynchronous Submission/Completion Queues"| J
-    J ==>|"Memory-Mapped I/O (MMIO) & DMA Kernel-Bypass I/O (Zero-Copy)"| T
-    T ==>|"Virtual PCIe BAR writes, doorbells, SQEs"| QN
-    QN ==>|"Translated Host-Level I/O Requests"| I
+    A -->|"Asynchronous Submission/Completion Queues"| J
+    J -->|"Memory-Mapped I/O (MMIO) & DMA Kernel-Bypass I/O (Zero-Copy)"| T
+    T -->|"Virtual PCIe BAR writes, doorbells, SQEs"| QN
+    QN -->|"Translated Host-Level I/O Requests"| I
 
-    P1 -.-> C
+    P1 -.-> B
     P2 -.-> J
 
     style GUEST fill:#13283d,color:#d8ebff,stroke:#4a90d9,stroke-width:2px
@@ -63,6 +63,12 @@ flowchart TD
     style T fill:#4a104a,color:#ffccff,stroke:#ff00ff,stroke-width:4px
     style P1 fill:#1a3a1a,color:#d9ffd9,stroke:#4aaa4a,stroke-dasharray: 4 3
     style P2 fill:#4a2a1a,color:#ffe6cc,stroke:#d9792b,stroke-dasharray: 4 3
+    linkStyle 1 stroke:#ffffff,stroke-width:2px
+    linkStyle 7 stroke:#d9792b,stroke-width:3px,stroke-dasharray: 6 4
+    linkStyle 8 stroke:#d9792b,stroke-width:3px,stroke-dasharray: 6 4
+    linkStyle 9 stroke:#d9792b,stroke-width:3px,stroke-dasharray: 6 4
+    linkStyle 10 stroke:#ffffff,stroke-width:3px,stroke-dasharray: 5 5
+    linkStyle 11 stroke:#ffffff,stroke-width:4px,stroke-dasharray: 5 5
 ```
 
 ---
