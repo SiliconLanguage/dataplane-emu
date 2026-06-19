@@ -3,66 +3,118 @@
 > **Note:** Mermaid does not support collapsible nodes. The diagram below shows the compact flow; expand each `▶ Details` section beneath it for per-layer descriptions.
 
 ```mermaid
-%%{init: {'theme': 'dark', 'themeVariables': { 'edgeLabelBackground': 'transparent'}}}%%
+%%{init: {"theme": "dark", "themeVariables": {"edgeLabelBackground": "transparent"}}}%%
 flowchart TD
-    subgraph GUEST["🛡️ GUEST OS VM"]
-        subgraph USER["🖥️ GUEST USER SPACE"]
-            P1["Path A: Guest Standard Kernel I/O"]
-            A["1. Application"]
-            B["2. POSIX API / glibc"]
-            P2["Path B: Guest Kernel-Bypass I/O (Zero-Copy)"]
-            J["3. User-Space Polled-Mode Driver (e.g., SPDK)"]
+    %% ==========================================
+    %% 1. DIAGRAM STRUCTURE & NODES
+    %% ==========================================
+
+    subgraph GUEST ["🛡️ GUEST OS VM"]
+        subgraph USER ["🖥️ GUEST USER SPACE"]
+            PA["Path A:<br/>Guest Standard<br/>Kernel I/O"]
+            PB["Path B:<br/>Guest Kernel-QEMU Bypass I/O<br/>(Zero-Copy)"]
+            PC["Path C:<br/>Direct Path /<br/>Guest Kernel-Bypass"]
+            
+            N1["1. Application"]
+            N2["2. POSIX API / glibc"]
+            N3["3. User-Space Polled-Mode<br/>Driver (e.g., SPDK)"]
         end
-
-        subgraph KERNEL["⚙️ GUEST KERNEL SPACE"]
-            C["<div style='text-align: left;'>4. VFS<br/>5. Filesystem</div>"]
-            E["6. Page Cache"]
-            F["<div style='text-align: left;'>7. Block Layer<br/>8. I/O Scheduler<br/>9. Device Driver</div>"]
-        end
-    end
-
-    subgraph VIRTUAL_HW["🌐 VIRTUAL INTERCONNECT BUS"]
-        T["10. Virtual Transport / Interconnect Bus (vPCIe, vNVMe-oF, vSAS/SATA)"]
-    end
-
-    subgraph HOST["⚙️ HOST OS CONTEXT"]
-        subgraph QEMU["11. QEMU PROCESS"]
-            QN["12. QEMU NVMe Emulation Logic"]
+        
+        subgraph KERNEL ["⚙️ GUEST KERNEL SPACE"]
+            N4["4. VFS<br/>5. Filesystem (ext4 / xfs / btrfs)"]
+            N6["6. Page Cache"]
+            N7["7. Block Layer<br/>8. I/O Scheduler<br/>9. Device Driver"]
         end
     end
 
-    subgraph PHYSICAL_HW["🔩 PHYSICAL HARDWARE SPACE"]
-        I["13. Storage Device (NVMe SSD, NVMe-oF Target, Array)"]
+    subgraph VIRTUAL_HW ["🌐 VIRTUAL INTERCONNECT BUS"]
+        N10["10. Virtual Transport / Interconnect Bus (vPCIe, vNVMe-oF, vSAS/SATA)"]
     end
 
-    A -->|"Guest-Context Synchronous Syscalls"| B
-    B -->|"Standard Kernel I/O Stack"| C
-    C --> E
-    E -->|"Cache HIT → user space"| B
-    E -->|"Cache MISS"| F
-    F -->|"Guest Driver Commands over Virtual Bus"| T
+    subgraph HOST ["⚙️ HOST OS CONTEXT"]
+        subgraph QEMU ["11. QEMU PROCESS"]
+            N12["12. QEMU NVMe Emulation Logic"]
+        end
+    end
 
-    A -->|"Asynchronous Submission/Completion Queues"| J
-    J -->|"Memory-Mapped I/O (MMIO) & DMA Kernel-Bypass I/O (Zero-Copy)"| T
-    T -->|"Virtual PCIe BAR writes, doorbells, SQEs"| QN
-    QN -->|"Translated Host-Level I/O Requests"| I
+    subgraph PHYSICAL_HW ["🔩 PHYSICAL HARDWARE SPACE"]
+        N13["13. High-Speed Storage Device<br/>(NVMe SSD, NVMe-oF Target, Array)<br/>⚡ PCIe Gen4 / Gen5 Bare Metal"]
+    end
 
-    P1 -.-> B
-    P2 -.-> J
+    %% Invisible dummy node for Path C alignment
+    LBL_C["MMIO and DMA Kernel-Bypass I/O"]
 
-    style GUEST fill:#13283d,color:#d8ebff,stroke:#4a90d9,stroke-width:2px
-    style USER fill:#1e3a5f,color:#cce0ff,stroke:#4a90d9
-    style KERNEL fill:#1a3a1a,color:#ccffcc,stroke:#4aaa4a
-    style HOST fill:#3d2d12,color:#ffe9cc,stroke:#d08a2b,stroke-width:2px
-    style QEMU fill:#4a1a4a,color:#ffccff,stroke:#ff00ff,stroke-width:3px,stroke-dasharray: 5 5
-    style QN fill:#5a105a,color:#ffddff,stroke:#ff00ff,stroke-width:4px
+    %% ==========================================
+    %% 2. CORE DATA ROUTING & EXACT INDEXING
+    %% ==========================================
+    
+    %% Indices 0, 1, 2 (Invisible alignment links)
+    PA ~~~ N1
+    PB ~~~ N1
+    PC ~~~ N1
+    
+    %% --- PATH A (RED) ---
+    %% Indices 3, 4, 5, 6, 7, 8, 9
+    PA -.-> N2
+    N1 --> N2
+    N2 == Standard Kernel I/O Stack ==> N4
+    N4 --> N6
+    N6 -->|Cache HIT to user space| N2
+    N6 -->|Cache MISS| N7
+    N7 -->|Guest Driver Commands over Virtual Bus| N10
+    
+    %% --- PATH B (YELLOW-GREEN) ---
+    %% Indices 10, 11, 12, 13, 14
+    PB -.-> N3
+    N1 -->|Asynchronous Submission and Completion Queues| N3
+    N3 -.->|To Emulated Virtual Bus| N10
+    N10 == Virtual PCIe BAR writes, doorbells, SQEs ==> N12
+    N12 == Translated Host Level I/O Requests ==> N13
+    
+    %% --- PATH C (GREEN) ---
+    %% Indices 15, 16, 17
+    PC -.-> N3
+    N3 === LBL_C
+    LBL_C ==> N13
+
+    %% ==========================================
+    %% 3. VISUAL STYLING (Safely at the bottom)
+    %% ==========================================
+
+    %% Subgraph Styles
+    style GUEST fill:#112030,color:#cdd9e5,stroke:#375172
+    style USER fill:#162b42,color:#cdd9e5,stroke:#42628a
+    style KERNEL fill:#2a0a0a,color:#ffcccc,stroke:#ff4d4d
     style VIRTUAL_HW fill:#2a1a3a,color:#e6ccff,stroke:#ff00ff,stroke-width:3px,stroke-dasharray: 5 5
-    style PHYSICAL_HW fill:#3a1a1a,color:#ffcccc,stroke:#aa4a4a
-    style E fill:#2a3a1a,color:#eeffcc,stroke:#88aa44
-    style J fill:#4a2a1a,color:#ffe6cc,stroke:#d9792b,stroke-width:2px
-    style T fill:#4a104a,color:#ffccff,stroke:#ff00ff,stroke-width:4px
-    style P1 fill:#1a3a1a,color:#d9ffd9,stroke:#4aaa4a,stroke-dasharray: 4 3
-    style P2 fill:#4a2a1a,color:#ffe6cc,stroke:#d9792b,stroke-dasharray: 4 3
+    style HOST fill:#3d2a14,color:#e1d1ba,stroke:#855d2c
+    style QEMU fill:#4a1a4a,color:#ffccff,stroke:#ff00ff,stroke-width:3px,stroke-dasharray: 5 5
+    style PHYSICAL_HW fill:#17191e,color:#e2e8f0,stroke:#94a3b8,stroke-width:3px
+
+    %% Legend / Callout Node Styles
+    style PA fill:#2a0a0a,stroke:#ff4d4d,stroke-width:2px,color:#ffcccc
+    style PB fill:#1a220a,stroke:#ccff33,stroke-width:2px,color:#e6ffb3
+    style PC fill:#0a2a1a,stroke:#00e676,stroke-width:2px,color:#b3ffcc
+    style LBL_C fill:#0a2a1a,stroke:#00e676,stroke-width:2px,color:#b3ffcc,font-weight:bold
+
+    %% Highlighted Internal Nodes
+    style N10 fill:#4a104a,color:#ffccff,stroke:#ff00ff,stroke-width:4px
+    style N12 fill:#5a105a,color:#ffddff,stroke:#ff00ff,stroke-width:4px
+    style N13 fill:#0f1115,color:#38bdf8,stroke:#38bdf8,stroke-width:2px
+
+    %% Path A Links (Red)
+    linkStyle 4,6 stroke:#ff4d4d,stroke-width:2px,color:#ff4d4d
+    linkStyle 3 stroke:#ff4d4d,stroke-width:2px,stroke-dasharray: 5 5,color:#ff4d4d
+    linkStyle 5 stroke:#ff4d4d,stroke-width:3px,color:#ff4d4d
+    linkStyle 7,8,9 stroke:#ff4d4d,stroke-width:2px,color:#ff4d4d
+
+    %% Path B Links (Yellow-Green)
+    linkStyle 11 stroke:#ccff33,stroke-width:2px,color:#ccff33
+    linkStyle 10,12 stroke:#ccff33,stroke-width:2px,stroke-dasharray: 5 5,color:#ccff33
+    linkStyle 13,14 stroke:#ccff33,stroke-width:3px,color:#ccff33
+
+    %% Path C Links (Green)
+    linkStyle 15 stroke:#00e676,stroke-width:2px,stroke-dasharray: 5 5,color:#00e676
+    linkStyle 16,17 stroke:#00e676,stroke-width:4px,color:#00e676
 ```
 
 ---
