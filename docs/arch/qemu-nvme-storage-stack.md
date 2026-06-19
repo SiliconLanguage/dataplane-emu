@@ -63,10 +63,11 @@ flowchart TD
     style T fill:#4a104a,color:#ffccff,stroke:#ff00ff,stroke-width:4px
     style P1 fill:#1a3a1a,color:#d9ffd9,stroke:#4aaa4a,stroke-dasharray: 4 3
     style P2 fill:#4a2a1a,color:#ffe6cc,stroke:#d9792b,stroke-dasharray: 4 3
+    linkStyle 1 stroke:#ffffff,stroke-width:2px
     linkStyle 7 stroke:#d9792b,stroke-width:3px,stroke-dasharray: 6 4
     linkStyle 8 stroke:#d9792b,stroke-width:3px,stroke-dasharray: 6 4
     linkStyle 9 stroke:#d9792b,stroke-width:3px,stroke-dasharray: 6 4
-    linkStyle 10 stroke:#ffffff,stroke-width:4px,stroke-dasharray: 5 5
+    linkStyle 10 stroke:#ffffff,stroke-width:3px,stroke-dasharray: 5 5
     linkStyle 11 stroke:#ffffff,stroke-width:4px,stroke-dasharray: 5 5
 ```
 
