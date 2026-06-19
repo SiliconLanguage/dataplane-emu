@@ -3,7 +3,7 @@
 > **Note:** Mermaid does not support collapsible nodes. The diagram below shows the compact flow; expand each `▶ Details` section beneath it for per-layer descriptions.
 
 ```mermaid
-%%{init: {"theme": "dark", "themeVariables": {"edgeLabelBackground": "transparent"}}}%%
+%%{init: {"theme": "dark", "themeVariables": {"edgeLabelBackground": "transparent", "lineColor": "#e5e7eb", "textColor": "#e5e7eb"}}}%%
 flowchart TD
     %% ==========================================
     %% 1. DIAGRAM STRUCTURE & NODES
@@ -12,8 +12,8 @@ flowchart TD
     subgraph GUEST ["🛡️ GUEST OS VM"]
         subgraph USER ["🖥️ GUEST USER SPACE"]
             PA["Path A:<br/>Guest Standard<br/>Kernel I/O"]
-            PB["Path B:<br/>Guest Kernel-QEMU Bypass I/O<br/>(Zero-Copy)"]
-            PC["Path C:<br/>Direct Path /<br/>Guest Kernel-Bypass"]
+            PB["Path B:<br/>QEMU - Kernel Bypass I/O<br/>(Zero-Copy)"]
+            PC["Path C:<br/>Direct Path /<br/>Kernel-Bypass"]
             
             N1["1. Application"]
             N2["2. POSIX API / glibc"]
@@ -38,7 +38,7 @@ flowchart TD
     end
 
     subgraph PHYSICAL_HW ["🔩 PHYSICAL HARDWARE SPACE"]
-        N13["13. High-Speed Storage Device<br/>(NVMe SSD, NVMe-oF Target, Array)<br/>⚡ PCIe Gen4 / Gen5 Bare Metal"]
+        N13["13. High-Speed Storage Device<br/>(Local NVMe SSD, NVMe-oF Target)"]
     end
 
     %% Invisible dummy node for Path C alignment
@@ -54,7 +54,7 @@ flowchart TD
     PC ~~~ N1
     
     %% --- PATH A (RED) ---
-    %% Indices 3, 4, 5, 6, 7, 8, 9
+    %% Indices 3, 4, 5, 6, 7, 8, 9, 10
     PA -.-> N2
     N1 --> N2
     N2 == Standard Kernel I/O Stack ==> N4
@@ -62,19 +62,20 @@ flowchart TD
     N6 -->|Cache HIT to user space| N2
     N6 -->|Cache MISS| N7
     N7 -->|Guest Driver Commands over Virtual Bus| N10
+    N10 ==>|Host Kernel Storage Stack / vhost| N13
     
     %% --- PATH B (YELLOW-GREEN) ---
-    %% Indices 10, 11, 12, 13, 14
+    %% Indices 11, 12, 13, 14, 15
     PB -.-> N3
-    N1 -->|Emu. Direct Memory Access| N3
+    N1 -->|Emulated Direct Memory Access| N3
     N3 -->|To Emulated Virtual Bus| N10
-    N10 == Virtual PCIe BAR writes, doorbells, SQEs ==> N12
-    N12 == Translated Host Level I/O Requests ==> N13
+    N10 == Virtual PCIe ops (BAR, doorbells, SQEs) ==> N12
+    N12 == Host-level I/O requests ==> N13
     
     %% --- PATH C (GREEN) ---
-    %% Indices 15, 16, 17, 18
+    %% Indices 16, 17, 18, 19
     PC -.-> N3
-    N1 -->|P2P Direct Memory Access| N3
+    N1 -->|Direct Zero-Copy Memory Access| N3
     N3 === LBL_C
     LBL_C ==> N13
 
@@ -105,17 +106,17 @@ flowchart TD
     %% Path A Links (Red)
     linkStyle 3 stroke:#ff4d4d,stroke-width:2px,stroke-dasharray: 5 5,color:#ff4d4d
     linkStyle 4,6,7,8,9 stroke:#ff4d4d,stroke-width:2px,color:#ff4d4d
-    linkStyle 5 stroke:#ff4d4d,stroke-width:3px,color:#ff4d4d
+    linkStyle 5,10 stroke:#ff4d4d,stroke-width:3px,color:#ff4d4d
 
     %% Path B Links (Yellow-Green)
-    linkStyle 10 stroke:#ccff33,stroke-width:2px,stroke-dasharray: 5 5,color:#ccff33
-    linkStyle 11,12 stroke:#ccff33,stroke-width:2px,color:#ccff33
-    linkStyle 13,14 stroke:#ccff33,stroke-width:3px,color:#ccff33
+    linkStyle 11 stroke:#ccff33,stroke-width:2px,stroke-dasharray: 5 5,color:#ccff33
+    linkStyle 12,13 stroke:#ccff33,stroke-width:2px,color:#ccff33
+    linkStyle 14,15 stroke:#ccff33,stroke-width:3px,color:#ccff33
 
     %% Path C Links (Green)
-    linkStyle 15 stroke:#00e676,stroke-width:2px,stroke-dasharray: 5 5,color:#00e676
-    linkStyle 16 stroke:#00e676,stroke-width:2px,color:#00e676
-    linkStyle 17,18 stroke:#00e676,stroke-width:4px,color:#00e676
+    linkStyle 16 stroke:#00e676,stroke-width:2px,stroke-dasharray: 5 5,color:#00e676
+    linkStyle 17 stroke:#00e676,stroke-width:2px,color:#00e676
+    linkStyle 18,19 stroke:#00e676,stroke-width:4px,color:#00e676
 ```
 
 ---
@@ -195,7 +196,7 @@ Translates kernel-level block I/O requests into hardware-specific command protoc
 <details>
 <summary><strong>10. Virtual Transport / Interconnect Bus (vPCIe, vNVMe-oF, vSAS/SATA)</strong> — Guest/Host Boundary</summary>
 
-Convergence point for both guest paths. Whether requests originate from guest-context synchronous system calls through the guest kernel stack or from guest asynchronous queue submission, both flows enter this same virtual bus and are forwarded to QEMU emulation.
+Convergence point for Path A and Path B. Requests from the guest kernel stack and the QEMU-kernel-bypass path enter this virtual bus and are forwarded to QEMU emulation. Path C is a direct kernel-bypass route and does not traverse this bus.
 
 </details>
 
@@ -214,8 +215,8 @@ Processes guest NVMe protocol operations arriving over virtual PCIe semantics, i
 </details>
 
 <details>
-<summary><strong>13. Storage Device (NVMe SSD, NVMe-oF Target, Array)</strong> — Hardware Space</summary>
+<summary><strong>13. High-Speed Storage Device (Local NVMe SSD, NVMe-oF Target)</strong> — Hardware Space</summary>
 
-The physical endpoint that executes I/O operations, including local NVMe SSDs, remote NVMe-oF targets, and storage arrays.
+The physical endpoint that executes I/O operations, including local NVMe SSDs and remote NVMe-oF targets.
 
 </details>
