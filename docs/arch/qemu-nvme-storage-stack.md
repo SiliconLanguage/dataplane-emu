@@ -3,7 +3,7 @@
 > **Note:** Mermaid does not support collapsible nodes. The diagram below shows the compact flow; expand each `▶ Details` section beneath it for per-layer descriptions.
 
 ```mermaid
-%%{init: {'theme': 'dark'}}%%
+%%{init: {'theme': 'dark', 'themeVariables': { 'edgeLabelBackground': 'transparent'}}}%%
 flowchart TD
     subgraph GUEST["🛡️ GUEST OS VM"]
         subgraph USER["🖥️ GUEST USER SPACE"]
@@ -36,7 +36,7 @@ flowchart TD
     end
 
     A -->|"Guest-Context Synchronous Syscalls"| B
-    B == Standard Kernel I/O Stack ==> C
+    B -->|"Standard Kernel I/O Stack"| C
     C --> E
     E -->|"Cache HIT → user space"| B
     E -->|"Cache MISS"| F
