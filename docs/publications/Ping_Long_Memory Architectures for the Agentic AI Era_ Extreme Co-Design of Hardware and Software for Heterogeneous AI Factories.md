@@ -2,13 +2,13 @@
 
 ## ***Extreme Hardware-Software Co-Design for Heterogeneous AI Factories***
 
-### ---
+###
 
 **Author:** Ping Long, Chief Systems Architect, Lead Researcher, [SiliconLanguage](http://siliconlanguage.com)
 
 **Contact:** [LinkedIn](https://www.linkedin.com) | [GitHub](https://github.com/SiliconLanguage?view_as=public#architecting-post-von-neumann-ai-infrastructure) | [0kernel.ai](https://0kernel.ai/) | [plongpingl@gmail.com](mailto:plongpingl@gmail.com) | [fellow@0kernel.ai](mailto:fellow@0kernel.ai)
 
-### ---
+###
 
 ## **Abstract and Executive Summary**
 
